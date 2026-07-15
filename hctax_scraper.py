@@ -14,6 +14,10 @@ import requests
 URL = "https://www.hctax.net/Property/listings/taxsalelisting"
 DB_PATH = "tax_sales.db"
 
+HEADERS = {
+    "User-Agent": "GovLandScout-SchoolProject/1.0 (contact: your-email@example.com)"
+}
+
 
 def fetch_page_text() -> str:
 
