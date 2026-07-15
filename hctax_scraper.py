@@ -1,20 +1,8 @@
 """
-GovLandScout - Harris County Tax Sale Scraper
+GovLandScout
 
-Scrapes the Harris County Tax Office's delinquent tax sale listing page
-and parses it into structured records.
+This is my first data scraper, it runs off of the Harris county website, which I found the easiest to navigate overall, and also covers many properties.
 
-Approach: the page's HTML structure may be complex/JS-rendered, but every
-listing on the page repeats the SAME set of labeled fields in plain text
-(e.g. "Precinct: Precinct 1", "Minimum Bid: $41,205.46"). Rather than
-relying on fragile CSS selectors, this scraper extracts the visible text
-and pulls fields out using labeled regex patterns. This is more robust
-to the page's markup changing, since the labels themselves rarely change.
-
-NOTE: Once you have this running, open the page in Chrome DevTools and
-compare against this approach -- if you find clean, stable HTML tags/classes
-per listing, a BeautifulSoup selector-based approach can be added as a
-second, more precise extraction path. For now, this gets you real data.
 """
 
 import re
@@ -26,19 +14,12 @@ import requests
 URL = "https://www.hctax.net/Property/listings/taxsalelisting"
 DB_PATH = "tax_sales.db"
 
-HEADERS = {
-    "User-Agent": "GovLandScout-SchoolProject/1.0 (contact: your-email@example.com)"
-}
-
 
 def fetch_page_text() -> str:
-    """Fetch the tax sale listing page and return its visible text."""
+
     resp = requests.get(URL, headers=HEADERS, timeout=30)
     resp.raise_for_status()
 
-    # Strip HTML tags crudely to get visible text. If you later confirm
-    # clean per-listing HTML tags in DevTools, swap this for BeautifulSoup
-    # tag-based extraction -- it'll be more precise than text stripping.
     from bs4 import BeautifulSoup
     soup = BeautifulSoup(resp.text, "html.parser")
     for tag in soup(["script", "style"]):
@@ -47,12 +28,7 @@ def fetch_page_text() -> str:
 
 
 def split_into_listing_blocks(page_text: str) -> list[str]:
-    """
-    Each listing block ends with 'Close' after its description, and the
-    next one begins after 'View Details'. Splitting on this boundary
-    gives us one chunk of text per listing.
-    """
-    # Drop everything before the first real listing (nav menu, terms of use, etc.)
+
     start_marker = "Precinct 1 Precinct 2"
     idx = page_text.find(start_marker)
     if idx != -1:
@@ -183,7 +159,6 @@ def main():
 
     print(f"Parsed and stored {parsed_count} listings into {DB_PATH}")
 
-    # Quick sanity check: print the first 3 parsed listings
     rows = conn.execute(
         "SELECT precinct, account_number, minimum_bid, legal_description "
         "FROM tax_sale_listings LIMIT 3"
