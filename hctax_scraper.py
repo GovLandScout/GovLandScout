@@ -122,26 +122,47 @@ def init_db(conn: sqlite3.Connection):
             adjudged_value TEXT,
             legal_description TEXT,
             status TEXT,
-            raw_hash TEXT UNIQUE,
+            raw_hash TEXT,
             raw_text TEXT,
             first_seen TEXT,
             last_seen TEXT
         )
     """)
+    conn.execute("""
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_account_number
+        ON tax_sale_listings(account_number)
+    """)
     conn.commit()
 
 
 def upsert_listing(conn: sqlite3.Connection, listing: dict):
+    """
+    Keyed on account_number, the stable per-property identifier -- raw_hash
+    is derived from scraped text that shifts slightly between requests, so
+    it can't be used to detect "same listing, scraped again".
+    """
     now = datetime.now(timezone.utc).isoformat()
     existing = conn.execute(
-        "SELECT id FROM tax_sale_listings WHERE raw_hash = ?",
-        (listing["raw_hash"],),
+        "SELECT id FROM tax_sale_listings WHERE account_number = ?",
+        (listing["account_number"],),
     ).fetchone()
 
     if existing:
         conn.execute(
-            "UPDATE tax_sale_listings SET last_seen = ? WHERE raw_hash = ?",
-            (now, listing["raw_hash"]),
+            """
+            UPDATE tax_sale_listings SET
+                precinct = ?, sale_number = ?, listing_type = ?, cause_number = ?,
+                judgment_date = ?, tax_years = ?, minimum_bid = ?, adjudged_value = ?,
+                legal_description = ?, status = ?, raw_hash = ?, raw_text = ?, last_seen = ?
+            WHERE account_number = ?
+            """,
+            (
+                listing["precinct"], listing["sale_number"], listing["listing_type"],
+                listing["cause_number"], listing["judgment_date"], listing["tax_years"],
+                listing["minimum_bid"], listing["adjudged_value"], listing["legal_description"],
+                listing["status"], listing["raw_hash"], listing["raw_text"], now,
+                listing["account_number"],
+            ),
         )
     else:
         conn.execute(
