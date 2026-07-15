@@ -11,6 +11,8 @@ import hashlib
 from datetime import datetime, date, timezone
 import requests
 
+import combined_db
+
 URL = "https://www.hctax.net/Property/listings/taxsalelisting"
 DB_PATH = "tax_sales.db"
 
@@ -175,12 +177,27 @@ def main():
     conn = sqlite3.connect(DB_PATH)
     init_db(conn)
 
+    combined_conn = combined_db.get_connection()
+
     parsed_count = 0
     for chunk in blocks:
         listing = parse_listing(chunk)
         if listing:
             upsert_listing(conn, listing)
+            combined_db.upsert_listing(
+                combined_conn,
+                county="Harris",
+                account_number=listing["account_number"],
+                precinct=listing["precinct"],
+                minimum_bid=listing["minimum_bid"],
+                estimated_value=listing["adjudged_value"],
+                description=listing["legal_description"],
+                status=listing["status"],
+                source="hctax.net",
+            )
             parsed_count += 1
+
+    combined_conn.close()
 
     print(f"Parsed and stored {parsed_count} listings into {DB_PATH}")
 

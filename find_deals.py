@@ -1,69 +1,74 @@
 """
 GovLandScout - Deal ranking
 
-Reads tax_sales.db (populated by hctax_scraper.py) and ranks listings
-by how far the minimum bid sits below the adjudged value. Listings
-missing pricing data are reported separately rather than dropped.
+Reads govlandscout.db's combined listings table (populated by both
+hctax_scraper.py and dallas_scraper.py via combined_db.py) and ranks
+listings across all counties by how far the minimum bid sits below the
+estimated value. Listings missing pricing data are reported separately
+rather than dropped.
 """
 
 import sqlite3
 
-DB_PATH = "tax_sales.db"
+import combined_db
+
+DB_PATH = combined_db.DB_PATH
 
 
 def fetch_priced_listings(conn: sqlite3.Connection) -> list[dict]:
     rows = conn.execute("""
-        SELECT precinct, account_number, minimum_bid, adjudged_value, legal_description
-        FROM tax_sale_listings
-        WHERE minimum_bid IS NOT NULL AND adjudged_value IS NOT NULL
+        SELECT county, precinct, account_number, minimum_bid, estimated_value, description
+        FROM listings
+        WHERE minimum_bid IS NOT NULL AND estimated_value IS NOT NULL
     """).fetchall()
 
     listings = []
-    for precinct, account_number, minimum_bid, adjudged_value, description in rows:
+    for county, precinct, account_number, minimum_bid, estimated_value, description in rows:
         min_bid = float(minimum_bid)
-        adj_value = float(adjudged_value)
-        if adj_value <= 0:
+        est_value = float(estimated_value)
+        if est_value <= 0:
             continue  # avoid divide-by-zero on bad data
-        equity = adj_value - min_bid
+        equity = est_value - min_bid
         listings.append({
-            "precinct": precinct,
+            "county": county,
+            "precinct": precinct or "",
             "account_number": account_number,
             "minimum_bid": min_bid,
-            "adjudged_value": adj_value,
+            "estimated_value": est_value,
             "equity": equity,
-            "equity_pct": equity / adj_value,
-            "legal_description": description or "",
+            "equity_pct": equity / est_value,
+            "description": description or "",
         })
     return listings
 
 
 def fetch_unpriced_count(conn: sqlite3.Connection) -> int:
     return conn.execute("""
-        SELECT COUNT(*) FROM tax_sale_listings
-        WHERE minimum_bid IS NULL OR adjudged_value IS NULL
+        SELECT COUNT(*) FROM listings
+        WHERE minimum_bid IS NULL OR estimated_value IS NULL
     """).fetchone()[0]
 
 
 def main(top_n: int = 20):
-    conn = sqlite3.connect(DB_PATH)
+    conn = combined_db.get_connection()
 
     listings = fetch_priced_listings(conn)
     listings.sort(key=lambda l: l["equity_pct"], reverse=True)
 
     unpriced_count = fetch_unpriced_count(conn)
 
-    print(f"{len(listings)} listings have both a minimum bid and adjudged value.")
+    print(f"{len(listings)} listings have both a minimum bid and estimated value.")
     print(f"{unpriced_count} listings are missing pricing data and are excluded from ranking below.\n")
 
-    print(f"Top {min(top_n, len(listings))} deals by equity (adjudged value - minimum bid):\n")
+    print(f"Top {min(top_n, len(listings))} deals by equity (estimated value - minimum bid):\n")
     for l in listings[:top_n]:
         print(
-            f"  {l['precinct']:<12} Acct#{l['account_number']:<15} "
+            f"  {l['county']:<8} {l['precinct']:<12} Acct#{l['account_number']:<20} "
             f"Min Bid: ${l['minimum_bid']:>12,.2f}  "
-            f"Adjudged: ${l['adjudged_value']:>12,.2f}  "
+            f"Est. Value: ${l['estimated_value']:>12,.2f}  "
             f"Equity: ${l['equity']:>12,.2f} ({l['equity_pct']:.0%})"
         )
-        print(f"      {l['legal_description'][:100]}")
+        print(f"      {l['description'][:100]}")
 
     conn.close()
 

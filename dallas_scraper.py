@@ -11,6 +11,8 @@ from datetime import datetime, timezone
 
 import requests
 
+import combined_db
+
 API_URL = "https://taxsales.lgbs.com/api/property_sales/"
 COUNTY = "DALLAS COUNTY"
 DB_PATH = "dallas_tax_sales.db"
@@ -22,10 +24,15 @@ HEADERS = {
 
 
 def fetch_all_listings() -> list[dict]:
- 
+    """
+    `ordering` is required, not optional -- without an explicit stable sort,
+    limit/offset pagination over a dataset with ties in the default order
+    can shift rows between pages mid-scrape, silently skipping or
+    duplicating listings. `uid` alone is sufficient since it's unique.
+    """
     listings = []
     url = API_URL
-    params = {"county": COUNTY, "limit": PAGE_SIZE}
+    params = {"county": COUNTY, "limit": PAGE_SIZE, "ordering": "uid"}
 
     while url:
         resp = requests.get(url, params=params, headers=HEADERS, timeout=30)
@@ -127,8 +134,31 @@ def main():
     conn = sqlite3.connect(DB_PATH)
     init_db(conn)
 
+    combined_conn = combined_db.get_connection()
+
     for listing in listings:
         upsert_listing(conn, listing)
+
+        description = ", ".join(
+            part for part in (
+                listing["prop_address_one"],
+                listing["prop_city"],
+                f"{listing['prop_state']} {listing['prop_zipcode']}".strip(),
+            ) if part
+        )
+        combined_db.upsert_listing(
+            combined_conn,
+            county="Dallas",
+            account_number=listing["account_nbr"],
+            precinct=listing["precinct"] or None,
+            minimum_bid=listing["minimum_bid"],
+            estimated_value=listing["value"],
+            description=description,
+            status=listing["status"],
+            source="taxsales.lgbs.com",
+        )
+
+    combined_conn.close()
 
     print(f"Stored {len(listings)} listings into {DB_PATH}")
 
