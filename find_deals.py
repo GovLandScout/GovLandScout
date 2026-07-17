@@ -60,6 +60,52 @@ def fetch_priced_listings(conn: sqlite3.Connection) -> list[dict]:
     return listings
 
 
+def fetch_all_listings(conn: sqlite3.Connection) -> list[dict]:
+    """
+    Every listing, priced or not -- used for the full browsable table on
+    the site (as opposed to fetch_priced_listings, which only returns
+    listings with a real equity calculation, for the CLI "top deals"
+    report). Missing/invalid pricing fields come back as None so the
+    caller can render "No data available" instead of dropping the row.
+    """
+    rows = conn.execute("""
+        SELECT county, precinct, account_number, minimum_bid, estimated_value, address,
+               description, source_url, latitude, longitude
+        FROM listings
+    """).fetchall()
+
+    listings = []
+    for (county, precinct, account_number, minimum_bid, estimated_value, address,
+         description, source_url, latitude, longitude) in rows:
+        min_bid = float(minimum_bid) if minimum_bid is not None else None
+        est_value = float(estimated_value) if estimated_value is not None else None
+
+        # A $0 minimum bid means "not yet set" (seen on future sale
+        # listings), not a real bid floor -- treat it as missing.
+        if min_bid is not None and min_bid <= 0:
+            min_bid = None
+        if est_value is not None and est_value <= 0:
+            est_value = None
+
+        equity = est_value - min_bid if min_bid is not None and est_value is not None else None
+        equity_pct = equity / est_value if equity is not None else None
+
+        listings.append({
+            "county": county,
+            "precinct": precinct or "",
+            "account_number": account_number,
+            "minimum_bid": min_bid,
+            "estimated_value": est_value,
+            "equity": equity,
+            "equity_pct": equity_pct,
+            "address": address or "",
+            "description": description or "",
+            "source_url": source_url,
+            "maps_url": build_maps_url(address, latitude, longitude),
+        })
+    return listings
+
+
 def fetch_unpriced_count(conn: sqlite3.Connection) -> int:
     return conn.execute("""
         SELECT COUNT(*) FROM listings
