@@ -103,3 +103,20 @@ def upsert_listing(
             ),
         )
     conn.commit()
+
+
+def update_estimated_value(
+    conn: sqlite3.Connection, county: str, account_number: str, estimated_value: str
+):
+    """
+    Narrow update for backfill scripts (e.g. hcad_value_backfill.py) that
+    enrich an existing listing with a value from a source other than the
+    one that originally scraped it -- unlike upsert_listing, this touches
+    only estimated_value and doesn't require (or overwrite) every field.
+    """
+    now = datetime.now(timezone.utc).isoformat()
+    conn.execute(
+        "UPDATE listings SET estimated_value = ?, last_seen = ? WHERE county = ? AND account_number = ?",
+        (estimated_value, now, county, account_number),
+    )
+    conn.commit()
