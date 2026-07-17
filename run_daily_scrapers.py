@@ -1,17 +1,17 @@
 """
-Runs both county scrapers back to back so govlandscout.db (the combined
-table both write into) gets a full refresh in one daily pass.
+Runs all county scrapers back to back so govlandscout.db (the combined
+table they all write into) gets a full refresh in one daily pass.
 
 Uses subprocess rather than importing and calling main() directly so each
 scraper still runs as its own clean process (matching how they behave when
-run manually), and one crashing doesn't take the other down with it.
+run manually), and one crashing doesn't take the others down with it.
 """
 
 import subprocess
 import sys
 from pathlib import Path
 
-SCRAPERS = ["hctax_scraper.py", "dallas_scraper.py"]
+SCRAPERS = ["hctax_scraper.py", "dallas_scraper.py", "tarrant_scraper.py"]
 
 
 def main():
