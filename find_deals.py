@@ -17,13 +17,13 @@ DB_PATH = combined_db.DB_PATH
 
 def fetch_priced_listings(conn: sqlite3.Connection) -> list[dict]:
     rows = conn.execute("""
-        SELECT county, precinct, account_number, minimum_bid, estimated_value, description
+        SELECT county, precinct, account_number, minimum_bid, estimated_value, address, description
         FROM listings
         WHERE minimum_bid IS NOT NULL AND estimated_value IS NOT NULL
     """).fetchall()
 
     listings = []
-    for county, precinct, account_number, minimum_bid, estimated_value, description in rows:
+    for county, precinct, account_number, minimum_bid, estimated_value, address, description in rows:
         min_bid = float(minimum_bid)
         est_value = float(estimated_value)
         if est_value <= 0:
@@ -37,6 +37,7 @@ def fetch_priced_listings(conn: sqlite3.Connection) -> list[dict]:
             "estimated_value": est_value,
             "equity": equity,
             "equity_pct": equity / est_value,
+            "address": address or "",
             "description": description or "",
         })
     return listings
@@ -68,7 +69,8 @@ def main(top_n: int = 20):
             f"Est. Value: ${l['estimated_value']:>12,.2f}  "
             f"Equity: ${l['equity']:>12,.2f} ({l['equity_pct']:.0%})"
         )
-        print(f"      {l['description'][:100]}")
+        location = l["address"] or l["description"] or "(no address or description on file)"
+        print(f"      {location[:100]}")
 
     conn.close()
 

@@ -41,6 +41,7 @@ def deals_page():
         f"<td>${l['estimated_value']:,.2f}</td>"
         f"<td>${l['equity']:,.2f}</td>"
         f"<td>{l['equity_pct']:.0%}</td>"
+        f"<td>{escape(l['address']) if l['address'] else '<em>not published</em>'}</td>"
         f"<td>{escape(l['description'][:120])}</td></tr>"
         for l in listings
     )
@@ -66,7 +67,7 @@ def deals_page():
       <table>
         <tr>
           <th>County</th><th>Precinct</th><th>Account #</th><th>Min Bid</th>
-          <th>Est. Value</th><th>Equity</th><th>Equity %</th><th>Description</th>
+          <th>Est. Value</th><th>Equity</th><th>Equity %</th><th>Address</th><th>Description</th>
         </tr>
         {rows}
       </table>

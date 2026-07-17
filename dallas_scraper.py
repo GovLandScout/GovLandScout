@@ -139,7 +139,7 @@ def main():
     for listing in listings:
         upsert_listing(conn, listing)
 
-        description = ", ".join(
+        address = ", ".join(
             part for part in (
                 listing["prop_address_one"],
                 listing["prop_city"],
@@ -153,7 +153,8 @@ def main():
             precinct=listing["precinct"] or None,
             minimum_bid=listing["minimum_bid"],
             estimated_value=listing["value"],
-            description=description,
+            address=address,
+            description=None,  # Dallas doesn't provide a separate legal description
             status=listing["status"],
             source="taxsales.lgbs.com",
         )

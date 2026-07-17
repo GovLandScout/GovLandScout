@@ -44,8 +44,8 @@ def split_into_listing_blocks(page_text: str) -> list[str]:
     return [c.strip() for c in chunks if c.strip()]
 
 
-def extract_field(pattern: str, text: str, group: int = 1) -> str | None:
-    match = re.search(pattern, text)
+def extract_field(pattern: str, text: str, group: int = 1, flags: int = 0) -> str | None:
+    match = re.search(pattern, text, flags)
     return match.group(group).strip() if match else None
 
 
@@ -68,6 +68,18 @@ def parse_listing(chunk: str) -> dict | None:
         r"(?:For Sale Description|Cancelled Description)\s*(.*)", chunk
     )
 
+    # Most Harris listings only give a legal (lot/block/subdivision)
+    # description, but many also embed a street address inline -- either
+    # explicitly labeled, or via "more commonly known as"/"also known as"
+    # followed by a real address (as opposed to "also known as" introducing
+    # an alternate *legal* description, which doesn't end in a TX zip code).
+    physical_address = extract_field(
+        r"(?:PHYSICAL ADDRESS|COMMON ADDRESS|MORE COMMONLY KNOWN AS|ALSO KNOWN AS)[:,]?\s*"
+        r"(\d[^.]*?(?:TX|TEXAS)\.?\s*\d{5})",
+        chunk,
+        flags=re.IGNORECASE,
+    )
+
     status = "cancelled" if "Cancelled" in chunk[:200] else "active"
 
     raw_hash = hashlib.sha256(chunk.encode()).hexdigest()
@@ -83,6 +95,7 @@ def parse_listing(chunk: str) -> dict | None:
         "minimum_bid": minimum_bid.replace(",", "") if minimum_bid else None,
         "adjudged_value": adjudged_value.replace(",", "") if adjudged_value else None,
         "legal_description": description,
+        "physical_address": physical_address,
         "status": status,
         "raw_hash": raw_hash,
         "raw_text": chunk,
@@ -103,6 +116,7 @@ def init_db(conn: sqlite3.Connection):
             minimum_bid TEXT,
             adjudged_value TEXT,
             legal_description TEXT,
+            physical_address TEXT,
             status TEXT,
             raw_hash TEXT,
             raw_text TEXT,
@@ -135,14 +149,16 @@ def upsert_listing(conn: sqlite3.Connection, listing: dict):
             UPDATE tax_sale_listings SET
                 precinct = ?, sale_number = ?, listing_type = ?, cause_number = ?,
                 judgment_date = ?, tax_years = ?, minimum_bid = ?, adjudged_value = ?,
-                legal_description = ?, status = ?, raw_hash = ?, raw_text = ?, last_seen = ?
+                legal_description = ?, physical_address = ?, status = ?, raw_hash = ?,
+                raw_text = ?, last_seen = ?
             WHERE account_number = ?
             """,
             (
                 listing["precinct"], listing["sale_number"], listing["listing_type"],
                 listing["cause_number"], listing["judgment_date"], listing["tax_years"],
                 listing["minimum_bid"], listing["adjudged_value"], listing["legal_description"],
-                listing["status"], listing["raw_hash"], listing["raw_text"], now,
+                listing["physical_address"], listing["status"], listing["raw_hash"],
+                listing["raw_text"], now,
                 listing["account_number"],
             ),
         )
@@ -152,16 +168,16 @@ def upsert_listing(conn: sqlite3.Connection, listing: dict):
             INSERT INTO tax_sale_listings (
                 precinct, sale_number, listing_type, account_number,
                 cause_number, judgment_date, tax_years, minimum_bid,
-                adjudged_value, legal_description, status, raw_hash,
-                raw_text, first_seen, last_seen
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                adjudged_value, legal_description, physical_address, status,
+                raw_hash, raw_text, first_seen, last_seen
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 listing["precinct"], listing["sale_number"], listing["listing_type"],
                 listing["account_number"], listing["cause_number"], listing["judgment_date"],
                 listing["tax_years"], listing["minimum_bid"], listing["adjudged_value"],
-                listing["legal_description"], listing["status"], listing["raw_hash"],
-                listing["raw_text"], now, now,
+                listing["legal_description"], listing["physical_address"], listing["status"],
+                listing["raw_hash"], listing["raw_text"], now, now,
             ),
         )
     conn.commit()
@@ -191,6 +207,7 @@ def main():
                 precinct=listing["precinct"],
                 minimum_bid=listing["minimum_bid"],
                 estimated_value=listing["adjudged_value"],
+                address=listing["physical_address"],
                 description=listing["legal_description"],
                 status=listing["status"],
                 source="hctax.net",

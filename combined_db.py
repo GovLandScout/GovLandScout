@@ -30,6 +30,7 @@ def init_db(conn: sqlite3.Connection):
             precinct TEXT,
             minimum_bid TEXT,
             estimated_value TEXT,
+            address TEXT,
             description TEXT,
             status TEXT,
             source TEXT,
@@ -51,6 +52,7 @@ def upsert_listing(
     precinct: str | None,
     minimum_bid: str | None,
     estimated_value: str | None,
+    address: str | None,
     description: str | None,
     status: str | None,
     source: str,
@@ -69,13 +71,13 @@ def upsert_listing(
         conn.execute(
             """
             UPDATE listings SET
-                precinct = ?, minimum_bid = ?, estimated_value = ?,
+                precinct = ?, minimum_bid = ?, estimated_value = ?, address = ?,
                 description = ?, status = ?, source = ?, last_seen = ?
             WHERE county = ? AND account_number = ?
             """,
             (
-                precinct, minimum_bid, estimated_value, description, status, source,
-                now, county, account_number,
+                precinct, minimum_bid, estimated_value, address, description, status,
+                source, now, county, account_number,
             ),
         )
     else:
@@ -83,12 +85,12 @@ def upsert_listing(
             """
             INSERT INTO listings (
                 county, account_number, precinct, minimum_bid, estimated_value,
-                description, status, source, first_seen, last_seen
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                address, description, status, source, first_seen, last_seen
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 county, account_number, precinct, minimum_bid, estimated_value,
-                description, status, source, now, now,
+                address, description, status, source, now, now,
             ),
         )
     conn.commit()
