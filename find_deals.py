@@ -2,7 +2,7 @@
 GovLandScout - Deal ranking
 
 Reads govlandscout.db's combined listings table (populated by both
-hctax_scraper.py and dallas_scraper.py via combined_db.py) and ranks
+hctax_scraper.py and lgbs_scraper.py via combined_db.py) and ranks
 listings across all counties by how far the minimum bid sits below the
 estimated value. Listings missing pricing data are reported separately
 rather than dropped.
@@ -28,6 +28,9 @@ def fetch_priced_listings(conn: sqlite3.Connection) -> list[dict]:
         est_value = float(estimated_value)
         if est_value <= 0:
             continue  # avoid divide-by-zero on bad data
+        if min_bid <= 0:
+            continue  # a $0 minimum bid means "not yet set" (seen on future
+            # sale listings), not a real bid floor -- treat as unpriced
         equity = est_value - min_bid
         listings.append({
             "county": county,
@@ -47,6 +50,7 @@ def fetch_unpriced_count(conn: sqlite3.Connection) -> int:
     return conn.execute("""
         SELECT COUNT(*) FROM listings
         WHERE minimum_bid IS NULL OR estimated_value IS NULL
+           OR CAST(minimum_bid AS REAL) <= 0 OR CAST(estimated_value AS REAL) <= 0
     """).fetchone()[0]
 
 

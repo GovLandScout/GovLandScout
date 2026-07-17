@@ -2,7 +2,7 @@
 GovLandScout - Web viewer
 
 FastAPI app that serves the combined, ranked deals list scraped by
-hctax_scraper.py (Harris County) and dallas_scraper.py (Dallas County).
+hctax_scraper.py (Harris County) and lgbs_scraper.py (94 other TX counties).
 Run with: venv/bin/uvicorn web:app --reload
 """
 

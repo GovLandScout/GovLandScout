@@ -1,11 +1,11 @@
 """
 GovLandScout - Combined listings storage
 
-hctax_scraper.py and dallas_scraper.py acquire data completely differently
+hctax_scraper.py and lgbs_scraper.py acquire data completely differently
 (regex-over-scraped-HTML vs. a JSON API) and keep their own detailed,
-county-specific tables. Their fetch/parse logic isn't worth unifying -- it's
+source-specific tables. Their fetch/parse logic isn't worth unifying -- it's
 too different to share usefully. What's worth unifying is the OUTPUT: this
-module normalizes both counties' listings into one shared table so
+module normalizes every county's listings into one shared table so
 find_deals.py and web.py can rank/display them together.
 """
 

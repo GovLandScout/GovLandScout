@@ -11,7 +11,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-SCRAPERS = ["hctax_scraper.py", "dallas_scraper.py", "tarrant_scraper.py"]
+SCRAPERS = ["hctax_scraper.py", "lgbs_scraper.py"]
 
 
 def main():
