@@ -9,21 +9,33 @@ rather than dropped.
 """
 
 import sqlite3
+from urllib.parse import quote
 
 import combined_db
 
 DB_PATH = combined_db.DB_PATH
 
 
+def build_maps_url(address: str | None, latitude: float | None, longitude: float | None) -> str | None:
+    """Prefer exact coordinates when available; fall back to an address search."""
+    if latitude is not None and longitude is not None:
+        return f"https://www.google.com/maps?q={latitude},{longitude}"
+    if address:
+        return f"https://www.google.com/maps/search/?api=1&query={quote(address)}"
+    return None
+
+
 def fetch_priced_listings(conn: sqlite3.Connection) -> list[dict]:
     rows = conn.execute("""
-        SELECT county, precinct, account_number, minimum_bid, estimated_value, address, description
+        SELECT county, precinct, account_number, minimum_bid, estimated_value, address,
+               description, source_url, latitude, longitude
         FROM listings
         WHERE minimum_bid IS NOT NULL AND estimated_value IS NOT NULL
     """).fetchall()
 
     listings = []
-    for county, precinct, account_number, minimum_bid, estimated_value, address, description in rows:
+    for (county, precinct, account_number, minimum_bid, estimated_value, address,
+         description, source_url, latitude, longitude) in rows:
         min_bid = float(minimum_bid)
         est_value = float(estimated_value)
         if est_value <= 0:
@@ -42,6 +54,8 @@ def fetch_priced_listings(conn: sqlite3.Connection) -> list[dict]:
             "equity_pct": equity / est_value,
             "address": address or "",
             "description": description or "",
+            "source_url": source_url,
+            "maps_url": build_maps_url(address, latitude, longitude),
         })
     return listings
 
@@ -75,6 +89,10 @@ def main(top_n: int = 20):
         )
         location = l["address"] or l["description"] or "(no address or description on file)"
         print(f"      {location[:100]}")
+        if l["source_url"]:
+            print(f"      Listing: {l['source_url']}")
+        if l["maps_url"]:
+            print(f"      Map: {l['maps_url']}")
 
     conn.close()
 

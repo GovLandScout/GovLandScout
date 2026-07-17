@@ -33,6 +33,14 @@ def deals_page():
     unpriced_count = fetch_unpriced_count(conn)
     conn.close()
 
+    def links_cell(l: dict) -> str:
+        parts = []
+        if l["source_url"]:
+            parts.append(f'<a href="{escape(l["source_url"])}" target="_blank" rel="noopener noreferrer">Listing</a>')
+        if l["maps_url"]:
+            parts.append(f'<a href="{escape(l["maps_url"])}" target="_blank" rel="noopener noreferrer">Map</a>')
+        return " · ".join(parts) if parts else ""
+
     rows = "".join(
         f"<tr><td>{escape(l['county'])}</td>"
         f"<td>{escape(l['precinct'])}</td>"
@@ -42,7 +50,8 @@ def deals_page():
         f"<td>${l['equity']:,.2f}</td>"
         f"<td>{l['equity_pct']:.0%}</td>"
         f"<td>{escape(l['address']) if l['address'] else '<em>not published</em>'}</td>"
-        f"<td>{escape(l['description'][:120])}</td></tr>"
+        f"<td>{escape(l['description'][:120])}</td>"
+        f"<td>{links_cell(l)}</td></tr>"
         for l in listings
     )
 
@@ -67,7 +76,7 @@ def deals_page():
       <table>
         <tr>
           <th>County</th><th>Precinct</th><th>Account #</th><th>Min Bid</th>
-          <th>Est. Value</th><th>Equity</th><th>Equity %</th><th>Address</th><th>Description</th>
+          <th>Est. Value</th><th>Equity</th><th>Equity %</th><th>Address</th><th>Description</th><th>Links</th>
         </tr>
         {rows}
       </table>

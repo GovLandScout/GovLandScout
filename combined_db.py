@@ -34,6 +34,9 @@ def init_db(conn: sqlite3.Connection):
             description TEXT,
             status TEXT,
             source TEXT,
+            source_url TEXT,
+            latitude REAL,
+            longitude REAL,
             first_seen TEXT,
             last_seen TEXT
         )
@@ -56,6 +59,9 @@ def upsert_listing(
     description: str | None,
     status: str | None,
     source: str,
+    source_url: str | None = None,
+    latitude: float | None = None,
+    longitude: float | None = None,
 ):
     """Keyed on (county, account_number) -- account numbers aren't unique across counties."""
     if not account_number:
@@ -72,12 +78,13 @@ def upsert_listing(
             """
             UPDATE listings SET
                 precinct = ?, minimum_bid = ?, estimated_value = ?, address = ?,
-                description = ?, status = ?, source = ?, last_seen = ?
+                description = ?, status = ?, source = ?, source_url = ?,
+                latitude = ?, longitude = ?, last_seen = ?
             WHERE county = ? AND account_number = ?
             """,
             (
                 precinct, minimum_bid, estimated_value, address, description, status,
-                source, now, county, account_number,
+                source, source_url, latitude, longitude, now, county, account_number,
             ),
         )
     else:
@@ -85,12 +92,14 @@ def upsert_listing(
             """
             INSERT INTO listings (
                 county, account_number, precinct, minimum_bid, estimated_value,
-                address, description, status, source, first_seen, last_seen
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                address, description, status, source, source_url, latitude,
+                longitude, first_seen, last_seen
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 county, account_number, precinct, minimum_bid, estimated_value,
-                address, description, status, source, now, now,
+                address, description, status, source, source_url, latitude,
+                longitude, now, now,
             ),
         )
     conn.commit()

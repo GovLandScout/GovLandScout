@@ -177,6 +177,10 @@ def main():
                 f"{listing['prop_state']} {listing['prop_zipcode']}".strip(),
             ) if part
         )
+        geometry = listing.get("geometry") or {}
+        coords = geometry.get("coordinates") or [None, None]
+        longitude, latitude = coords[0], coords[1]
+
         combined_db.upsert_listing(
             combined_conn,
             county=normalize_county_name(listing["county"]),
@@ -188,6 +192,9 @@ def main():
             description=None,  # LGBS doesn't provide a separate legal description
             status=listing["status"],
             source="taxsales.lgbs.com",
+            source_url=f"https://taxsales.lgbs.com/detail/{listing['uid']}",
+            latitude=latitude,
+            longitude=longitude,
         )
 
     combined_conn.close()

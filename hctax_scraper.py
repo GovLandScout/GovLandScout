@@ -211,6 +211,10 @@ def main():
                 description=listing["legal_description"],
                 status=listing["status"],
                 source="hctax.net",
+                source_url=(
+                    "https://www.hctax.net/property/listings/saledetail"
+                    f"?account={listing['account_number']}"
+                ),
             )
             parsed_count += 1
 
