@@ -13,7 +13,7 @@ from pathlib import Path
 
 SCRAPERS = [
     "hctax_scraper.py", "lgbs_scraper.py", "gsa_scraper.py",
-    "tdhca_scraper.py", "houston_scraper.py", "pbfcm_harris_scraper.py",
+    "tdhca_scraper.py", "houston_scraper.py", "pbfcm_scraper.py",
 ]
 
 
