@@ -25,6 +25,22 @@ def build_maps_url(address: str | None, latitude: float | None, longitude: float
     return None
 
 
+def safe_float(value: str | None) -> float | None:
+    """
+    Every scraper is expected to only ever write valid numeric strings, but
+    source data has typos (one MVBA county PDF has "$20.285.28" -- a stray
+    period where a comma belongs, not valid as any real dollar amount) that
+    can slip through. A single bad value must not crash the entire site --
+    treat anything float() rejects the same as genuinely missing data.
+    """
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except ValueError:
+        return None
+
+
 def fetch_priced_listings(conn: sqlite3.Connection) -> list[dict]:
     rows = conn.execute("""
         SELECT county, precinct, account_number, minimum_bid, estimated_value, address,
@@ -36,8 +52,10 @@ def fetch_priced_listings(conn: sqlite3.Connection) -> list[dict]:
     listings = []
     for (county, precinct, account_number, minimum_bid, estimated_value, address,
          description, source_url, latitude, longitude) in rows:
-        min_bid = float(minimum_bid)
-        est_value = float(estimated_value)
+        min_bid = safe_float(minimum_bid)
+        est_value = safe_float(estimated_value)
+        if min_bid is None or est_value is None:
+            continue  # unparseable source data -- treat as unpriced
         if est_value <= 0:
             continue  # avoid divide-by-zero on bad data
         if min_bid <= 0:
@@ -77,8 +95,8 @@ def fetch_all_listings(conn: sqlite3.Connection) -> list[dict]:
     listings = []
     for (county, precinct, account_number, minimum_bid, estimated_value, address,
          description, source_url, latitude, longitude) in rows:
-        min_bid = float(minimum_bid) if minimum_bid is not None else None
-        est_value = float(estimated_value) if estimated_value is not None else None
+        min_bid = safe_float(minimum_bid)
+        est_value = safe_float(estimated_value)
 
         # A $0 minimum bid means "not yet set" (seen on future sale
         # listings), not a real bid floor -- treat it as missing.

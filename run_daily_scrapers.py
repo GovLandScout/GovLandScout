@@ -14,6 +14,8 @@ from pathlib import Path
 SCRAPERS = [
     "hctax_scraper.py", "lgbs_scraper.py", "gsa_scraper.py",
     "tdhca_scraper.py", "houston_scraper.py", "pbfcm_scraper.py",
+    "mvba_scraper.py",  # respects a mandatory 10s per-request crawl-delay,
+    # so this alone adds ~90s to every run (9 documents)
 ]
 
 
