@@ -194,9 +194,13 @@ def parse_row_5col_embedded_value(row: list[str]) -> dict | None:
     legal = join_lines(row[2])
     value_match = EMBEDDED_VALUE_PATTERN.search(legal)
     account_lines = [l.strip() for l in row[3].split("\n") if l.strip()]
-    # The longest all-digit line is the CAD-style account number (short
-    # lines like "R17703" seen alongside it are a different roll reference).
-    account = max((l for l in account_lines if l.replace(" ", "").isdigit()), key=len, default=None)
+    # The longest digit-only (dashes allowed, e.g. "7025-0592-000") line is
+    # the CAD/geographic ID; short alphanumeric lines like "R17703" seen
+    # alongside it are a different roll reference, not the account number.
+    account = max(
+        (l for l in account_lines if l.replace(" ", "").replace("-", "").isdigit()),
+        key=len, default=None,
+    )
     return {
         "cause_no": cause_no, "district_court": None, "judgment_date": None,
         "style_of_case": style, "legal_description": legal, "address": None,
