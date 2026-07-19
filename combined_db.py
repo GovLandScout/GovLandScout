@@ -180,3 +180,15 @@ def update_estimated_value(
         (estimated_value, now, county, account_number),
     )
     conn.commit()
+
+
+def update_lat_lon(
+    conn: PgConnection, county: str, account_number: str, latitude: float, longitude: float
+):
+    """Narrow update for geocoding backfill scripts (e.g. geocode_backfill.py) -- same shape as update_estimated_value."""
+    now = datetime.now(timezone.utc).isoformat()
+    conn.execute(
+        "UPDATE listings SET latitude = ?, longitude = ?, last_seen = ? WHERE county = ? AND account_number = ?",
+        (latitude, longitude, now, county, account_number),
+    )
+    conn.commit()
