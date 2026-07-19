@@ -29,6 +29,28 @@ app = FastAPI(title="GovLandScout")
 NO_DATA = "No data available"
 NO_DATA_HTML = f'<span class="nodata">{NO_DATA}</span>'
 
+# Location search matches raw county/address text, which misses listings
+# in a metro's collar counties/suburbs that don't happen to spell out the
+# metro name anywhere (e.g. a Sugar Land or Katy listing has no "Houston"
+# in its county or address). Rather than rely on incidental text matches,
+# explicitly map well-known metro names to the counties people mean by
+# them, so searching "houston" finds the whole metro, not just rows that
+# happen to say "Houston" verbatim.
+METRO_COUNTIES = {
+    "houston": {"Harris", "Fort Bend", "Montgomery", "Galveston", "Brazoria", "Liberty", "Waller", "Chambers"},
+    "dallas": {"Dallas", "Tarrant", "Collin", "Denton", "Rockwall", "Ellis", "Kaufman", "Johnson", "Parker", "Wise", "Hunt"},
+    "fort worth": {"Dallas", "Tarrant", "Collin", "Denton", "Rockwall", "Ellis", "Kaufman", "Johnson", "Parker", "Wise", "Hunt"},
+    "austin": {"Travis", "Williamson", "Hays", "Bastrop", "Caldwell"},
+    "san antonio": {"Bexar", "Atascosa", "Bandera", "Comal", "Guadalupe", "Kendall", "Medina", "Wilson"},
+}
+
+# Reverse index: county -> metro alias words that should match it, e.g.
+# a Tarrant County row should match searches for "dallas" or "fort worth".
+COUNTY_METRO_ALIASES: dict[str, set[str]] = {}
+for _alias, _counties in METRO_COUNTIES.items():
+    for _county in _counties:
+        COUNTY_METRO_ALIASES.setdefault(_county, set()).add(_alias)
+
 # Esri's "World Imagery" service is a free, keyless satellite basemap --
 # same usage tier as the OpenStreetMap tiles the map view already pulls
 # from, just requested as a single flattened image for a small bounding
@@ -128,7 +150,8 @@ def deals_page():
         # to reliably split out a city (no third comma segment).
         city = extract_city(l["address"])
         search_place = city if city else (l["address"] or "")
-        search_text = escape(f"{search_county} {l['precinct']} {search_place}".lower())
+        metro_terms = " ".join(sorted(COUNTY_METRO_ALIASES.get(l["county"], ())))
+        search_text = escape(f"{search_county} {l['precinct']} {search_place} {metro_terms}".lower())
         value_attr = l["estimated_value"] if l["estimated_value"] is not None else ""
         equity_pct_attr = l["equity_pct"] if l["equity_pct"] is not None else ""
         lat_attr = l["latitude"] if l["latitude"] is not None else ""
