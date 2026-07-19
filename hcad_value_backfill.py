@@ -5,15 +5,15 @@ Fills in estimated_value for Harris County listings that hctax_scraper.py
 couldn't get a value for, using Harris Central Appraisal District's own
 official market values.
 
-Deliberately kept out of run_daily_scrapers.py: HCAD only offers a full
-bulk export (no per-account API), and that export is large -- around
-210MB zipped, 870MB+ once the specific file we need is unzipped, covering
-all 1.6 million Harris County accounts just to look up a few hundred. The
-rest of this project re-scrapes fully on every server boot (no persistent
-disk on Render's free tier); doing that with an 870MB file on every cold
-start would be slow and wasteful for the ~40 listings it actually helps.
-Run this by hand locally instead, whenever you want fresher HCAD data,
-and let it enrich the existing govlandscout.db.
+Deliberately kept out of run_daily_scrapers.py and the scheduled GitHub
+Actions scrape: HCAD only offers a full bulk export (no per-account API),
+and that export is large -- around 210MB zipped, 870MB+ once the specific
+file we need is unzipped, covering all 1.6 million Harris County accounts
+just to look up a few hundred. Not worth that bandwidth/time on a
+schedule for the ~40 listings it actually helps, and HCAD's yearly
+assessment data doesn't change often enough to need it. Run this by hand
+locally instead, whenever you want fresher HCAD data -- it writes
+straight into the same Postgres database the scheduled scrapers use.
 
 The download endpoint isn't documented -- found by reading the JS behind
 HCAD's public data download page (HcadPdata.js), which calls a small
@@ -22,7 +22,6 @@ back to a hardcoded URL.
 """
 
 import io
-import sqlite3
 import zipfile
 
 import requests
@@ -59,12 +58,20 @@ def get_real_acct_zip_url(tax_year: str) -> str:
     raise RuntimeError("Real_acct_owner.zip not found in HCAD's current download list")
 
 
-def fetch_target_accounts(conn: sqlite3.Connection) -> set[str]:
+NUMERIC_PATTERN = r"^\d+(\.\d+)?$"
+
+
+def fetch_target_accounts(conn: combined_db.PgConnection) -> set[str]:
+    # The regex pattern is passed as a bound parameter, not embedded as a
+    # raw literal in the SQL text -- PgConnection.execute() does a naive
+    # '?' -> '%s' replace on the whole query string, which would otherwise
+    # also corrupt the '?' inside "(\.\d+)?" if it were written inline.
     rows = conn.execute("""
         SELECT account_number FROM listings
         WHERE county = 'Harris'
-          AND (estimated_value IS NULL OR CAST(estimated_value AS REAL) <= 0)
-    """).fetchall()
+          AND (estimated_value IS NULL OR NOT estimated_value ~ ?
+               OR CAST(estimated_value AS REAL) <= 0)
+    """, (NUMERIC_PATTERN,)).fetchall()
     return {r[0] for r in rows}
 
 
@@ -116,7 +123,7 @@ def main():
     for account_number, value in values.items():
         combined_db.update_estimated_value(conn, "Harris", account_number, value)
 
-    print(f"Backfilled {len(values)} listings' estimated_value in {combined_db.DB_PATH}.")
+    print(f"Backfilled {len(values)} listings' estimated_value.")
     conn.close()
 
 

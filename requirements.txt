@@ -3,3 +3,5 @@ beautifulsoup4
 fastapi
 uvicorn
 pdfplumber
+psycopg2-binary
+python-dotenv

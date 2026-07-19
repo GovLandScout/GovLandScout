@@ -1,19 +1,15 @@
 """
 GovLandScout - Deal ranking
 
-Reads govlandscout.db's combined listings table (populated by both
-hctax_scraper.py and lgbs_scraper.py via combined_db.py) and ranks
-listings across all counties by how far the minimum bid sits below the
-estimated value. Listings missing pricing data are reported separately
-rather than dropped.
+Reads combined_db's combined listings table (populated by every source
+scraper via combined_db.py) and ranks listings across all counties by
+how far the minimum bid sits below the estimated value. Listings
+missing pricing data are reported separately rather than dropped.
 """
 
-import sqlite3
 from urllib.parse import quote
 
 import combined_db
-
-DB_PATH = combined_db.DB_PATH
 
 
 def build_maps_url(address: str | None, latitude: float | None, longitude: float | None) -> str | None:
@@ -41,7 +37,7 @@ def safe_float(value: str | None) -> float | None:
         return None
 
 
-def fetch_priced_listings(conn: sqlite3.Connection) -> list[dict]:
+def fetch_priced_listings(conn: combined_db.PgConnection) -> list[dict]:
     rows = conn.execute("""
         SELECT county, precinct, account_number, minimum_bid, estimated_value, address,
                description, source_url, latitude, longitude
@@ -78,7 +74,7 @@ def fetch_priced_listings(conn: sqlite3.Connection) -> list[dict]:
     return listings
 
 
-def fetch_all_listings(conn: sqlite3.Connection) -> list[dict]:
+def fetch_all_listings(conn: combined_db.PgConnection) -> list[dict]:
     """
     Every listing, priced or not -- used for the full browsable table on
     the site (as opposed to fetch_priced_listings, which only returns
@@ -124,12 +120,20 @@ def fetch_all_listings(conn: sqlite3.Connection) -> list[dict]:
     return listings
 
 
-def fetch_unpriced_count(conn: sqlite3.Connection) -> int:
+NUMERIC_PATTERN = r"^\d+(\.\d+)?$"
+
+
+def fetch_unpriced_count(conn: combined_db.PgConnection) -> int:
+    # Postgres's CAST is strict (errors on non-numeric input, unlike
+    # SQLite's lenient CAST) -- guard with a regex match first so a
+    # malformed value from any source can't crash this query the way
+    # "$20.285.28" once crashed the whole site (see safe_float above).
     return conn.execute("""
         SELECT COUNT(*) FROM listings
         WHERE minimum_bid IS NULL OR estimated_value IS NULL
+           OR NOT minimum_bid ~ ? OR NOT estimated_value ~ ?
            OR CAST(minimum_bid AS REAL) <= 0 OR CAST(estimated_value AS REAL) <= 0
-    """).fetchone()[0]
+    """, (NUMERIC_PATTERN, NUMERIC_PATTERN)).fetchone()[0]
 
 
 def main(top_n: int = 20):

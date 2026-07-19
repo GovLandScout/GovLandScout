@@ -1,6 +1,6 @@
 """
-Runs all county scrapers back to back so govlandscout.db (the combined
-table they all write into) gets a full refresh in one daily pass.
+Runs all county scrapers back to back so the combined listings table in
+Postgres (see combined_db.py) gets a full refresh in one daily pass.
 
 Uses subprocess rather than importing and calling main() directly so each
 scraper still runs as its own clean process (matching how they behave when

@@ -1,0 +1,32 @@
+name: Scheduled scrape
+
+# Runs all scrapers on a schedule and writes to the same Postgres database
+# the live site reads from (see combined_db.py). Deliberately NOT run as
+# part of the Render web service's startup anymore -- a full run takes
+# 3-4+ minutes (PBFCM and MVBA are both slow, crawl-delay-bound scrapes),
+# which used to exceed Render's boot timeout and leave the site serving
+# whatever partial data existed when the boot got killed.
+
+on:
+  schedule:
+    - cron: "0 12 * * *"  # ~7am US Central (adjust for your timezone/DST as needed)
+  workflow_dispatch: {}  # allows manually triggering a run from the Actions tab
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run all scrapers
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: python run_daily_scrapers.py
