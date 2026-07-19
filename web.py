@@ -29,6 +29,28 @@ app = FastAPI(title="GovLandScout")
 NO_DATA = "No data available"
 NO_DATA_HTML = f'<span class="nodata">{NO_DATA}</span>'
 
+# Esri's "World Imagery" service is a free, keyless satellite basemap --
+# same usage tier as the OpenStreetMap tiles the map view already pulls
+# from, just requested as a single flattened image for a small bounding
+# box around a point instead of as map tiles. No account, no billing.
+SATELLITE_EXPORT_URL = "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/export"
+THUMB_HALF_HEIGHT_DEG = 0.0006  # ~65m north/south -- tight enough to show just the parcel
+
+
+def satellite_thumbnail_url(latitude: float, longitude: float) -> str:
+    # Longitude degrees shrink as they approach the poles; correct by
+    # latitude so the box covers roughly the same real-world distance
+    # east/west as it does north/south, keeping the thumbnail square-ish.
+    half_lon = THUMB_HALF_HEIGHT_DEG / math.cos(math.radians(latitude))
+    bbox = (
+        f"{longitude - half_lon},{latitude - THUMB_HALF_HEIGHT_DEG},"
+        f"{longitude + half_lon},{latitude + THUMB_HALF_HEIGHT_DEG}"
+    )
+    return (
+        f"{SATELLITE_EXPORT_URL}?bbox={bbox}&bboxSR=4326&imageSR=4326"
+        "&size=160,160&format=jpg&f=image"
+    )
+
 
 def get_all_listings() -> list[dict]:
     conn = combined_db.get_connection()
@@ -72,6 +94,12 @@ def deals_page():
             parts.append(f'<a href="{escape(l["maps_url"])}" target="_blank" rel="noopener noreferrer">Map</a>')
         return " · ".join(parts) if parts else NO_DATA_HTML
 
+    def image_cell(l: dict) -> str:
+        if l["latitude"] is None or l["longitude"] is None:
+            return NO_DATA_HTML
+        url = escape(satellite_thumbnail_url(l["latitude"], l["longitude"]))
+        return f'<img src="{url}" width="80" height="80" loading="lazy" alt="Satellite view" class="thumb">'
+
     def row_html(l: dict) -> str:
         search_text = escape(f"{l['county']} {l['precinct']} {l['address']}".lower())
         value_attr = l["estimated_value"] if l["estimated_value"] is not None else ""
@@ -90,7 +118,8 @@ def deals_page():
             f"<td>{pct_cell(l['equity_pct'])}</td>"
             f"<td>{escape(l['address']) if l['address'] else NO_DATA_HTML}</td>"
             f"<td>{escape(l['description'][:120]) if l['description'] else NO_DATA_HTML}</td>"
-            f"<td>{links_cell(l)}</td></tr>"
+            f"<td>{links_cell(l)}</td>"
+            f"<td>{image_cell(l)}</td></tr>"
         )
 
     rows = "".join(row_html(l) for l in listings)
@@ -110,6 +139,7 @@ def deals_page():
         tr:nth-child(even) td {{ background: #fafafa; }}
         tr:nth-child(odd) td {{ background: #fff; }}
         .nodata {{ color: #999; font-style: italic; }}
+        .thumb {{ display: block; object-fit: cover; border-radius: 4px; }}
 
         .controls {{
           display: flex; flex-wrap: wrap; gap: 1.5rem; align-items: flex-end;
@@ -181,7 +211,7 @@ def deals_page():
         <thead>
         <tr>
           <th>County</th><th>Precinct</th><th>Account #</th><th>Min Bid</th>
-          <th>Est. Value</th><th>Equity</th><th>Equity %</th><th>Address</th><th>Description</th><th>Links</th>
+          <th>Est. Value</th><th>Equity</th><th>Equity %</th><th>Address</th><th>Description</th><th>Links</th><th>Image</th>
         </tr>
         </thead>
         <tbody id="dealsBody">
@@ -223,6 +253,17 @@ def deals_page():
 
         function buildPopupContent(row) {{
           const div = document.createElement('div');
+
+          const imgCell = row.cells[10];
+          const img = imgCell.querySelector('img');
+          if (img) {{
+            const imgClone = img.cloneNode(true);
+            imgClone.removeAttribute('loading');  // it's about to be visible -- fetch it now
+            imgClone.width = 150;
+            imgClone.height = 150;
+            div.appendChild(imgClone);
+            div.appendChild(document.createElement('br'));
+          }}
 
           const county = document.createElement('strong');
           county.textContent = row.cells[0].textContent;
