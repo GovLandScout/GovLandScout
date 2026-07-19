@@ -192,3 +192,13 @@ def update_lat_lon(
         (latitude, longitude, now, county, account_number),
     )
     conn.commit()
+
+
+def update_address(conn: PgConnection, county: str, account_number: str, address: str):
+    """Narrow update for backfill scripts (e.g. hcad_address_backfill.py) -- same shape as update_estimated_value."""
+    now = datetime.now(timezone.utc).isoformat()
+    conn.execute(
+        "UPDATE listings SET address = ?, last_seen = ? WHERE county = ? AND account_number = ?",
+        (address, now, county, account_number),
+    )
+    conn.commit()
