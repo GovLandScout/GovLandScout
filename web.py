@@ -101,7 +101,15 @@ def deals_page():
         return f'<img src="{url}" width="80" height="80" loading="lazy" alt="Satellite view" class="thumb">'
 
     def row_html(l: dict) -> str:
-        search_text = escape(f"{l['county']} {l['precinct']} {l['address']}".lower())
+        # Texas has an actual Houston County (Crockett/Kennard/Lovelady --
+        # ~100mi from Houston, no relation to it) distinct from Harris
+        # County, which is where the city of Houston actually is. Searching
+        # "houston" should find Houston addresses, not Houston COUNTY's
+        # unrelated listings, so leave the raw county name out of the
+        # search blob for this one case -- those listings are still
+        # findable by their own city/address text, just not by "houston".
+        search_county = "" if l["county"] == "Houston" else l["county"]
+        search_text = escape(f"{search_county} {l['precinct']} {l['address']}".lower())
         value_attr = l["estimated_value"] if l["estimated_value"] is not None else ""
         equity_pct_attr = l["equity_pct"] if l["equity_pct"] is not None else ""
         lat_attr = l["latitude"] if l["latitude"] is not None else ""
