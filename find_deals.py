@@ -116,6 +116,8 @@ def fetch_all_listings(conn: combined_db.PgConnection) -> list[dict]:
             "description": description or "",
             "source_url": source_url,
             "maps_url": build_maps_url(address, latitude, longitude),
+            "latitude": latitude,
+            "longitude": longitude,
         })
     return listings
 

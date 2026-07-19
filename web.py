@@ -76,8 +76,11 @@ def deals_page():
         search_text = escape(f"{l['county']} {l['precinct']} {l['address']}".lower())
         value_attr = l["estimated_value"] if l["estimated_value"] is not None else ""
         equity_pct_attr = l["equity_pct"] if l["equity_pct"] is not None else ""
+        lat_attr = l["latitude"] if l["latitude"] is not None else ""
+        lon_attr = l["longitude"] if l["longitude"] is not None else ""
         return (
-            f'<tr data-search="{search_text}" data-value="{value_attr}" data-equity-pct="{equity_pct_attr}">'
+            f'<tr data-search="{search_text}" data-value="{value_attr}" data-equity-pct="{equity_pct_attr}"'
+            f' data-lat="{lat_attr}" data-lon="{lon_attr}">'
             f"<td>{escape(l['county'])}</td>"
             f"<td>{escape(l['precinct']) if l['precinct'] else NO_DATA_HTML}</td>"
             f"<td>{escape(l['account_number'])}</td>"
@@ -96,6 +99,8 @@ def deals_page():
     <html>
     <head>
       <title>GovLandScout - Tax Sale Deals</title>
+      <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+            integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="" />
       <style>
         html {{ color-scheme: light; }}
         body {{ font-family: sans-serif; margin: 2rem; background: #fff; color: #111; }}
@@ -120,12 +125,13 @@ def deals_page():
         .range-control .range-row {{ display: flex; align-items: center; gap: 0.5rem; }}
         .range-control input[type="range"] {{ flex: 1; }}
         .range-value {{ font-size: 0.8rem; color: #333; white-space: nowrap; min-width: 5.5rem; }}
-        #resetFilters {{
+        #resetFilters, #toggleMap {{
           padding: 0.45rem 0.9rem; font-size: 0.85rem; border: 1px solid #888;
-          border-radius: 4px; background: #fff; cursor: pointer;
+          border-radius: 4px; background: #fff; cursor: pointer; margin-right: 0.5rem;
         }}
-        #resetFilters:hover {{ background: #eee; }}
+        #resetFilters:hover, #toggleMap:hover {{ background: #eee; }}
         #resultSummary {{ font-size: 0.85rem; color: #444; }}
+        #mapContainer {{ display: none; height: 500px; margin-bottom: 1rem; border: 1px solid #ccc; border-radius: 6px; }}
       </style>
     </head>
     <body>
@@ -161,12 +167,15 @@ def deals_page():
 
         <div class="control">
           <button id="resetFilters" onclick="resetFilters()">Reset filters</button>
+          <button id="toggleMap" onclick="toggleMap()">Show map</button>
         </div>
 
         <div class="control">
           <span id="resultSummary"></span>
         </div>
       </div>
+
+      <div id="mapContainer"></div>
 
       <table id="dealsTable">
         <thead>
@@ -180,9 +189,81 @@ def deals_page():
         </tbody>
       </table>
 
+      <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+              integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
       <script>
         const VALUE_MIN = {value_min};
         const VALUE_MAX = {value_max};
+
+        let map = null;
+        let markerLayer = null;
+
+        function toggleMap() {{
+          const container = document.getElementById('mapContainer');
+          const btn = document.getElementById('toggleMap');
+          const showing = container.style.display === 'block';
+          if (showing) {{
+            container.style.display = 'none';
+            btn.textContent = 'Show map';
+            return;
+          }}
+          container.style.display = 'block';
+          btn.textContent = 'Hide map';
+          if (!map) {{
+            map = L.map('mapContainer').setView([31.0, -99.0], 6);  // roughly centered on Texas
+            L.tileLayer('https://{{s}}.tile.openstreetmap.org/{{z}}/{{x}}/{{y}}.png', {{
+              maxZoom: 19,
+              attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+            }}).addTo(map);
+            markerLayer = L.layerGroup().addTo(map);
+          }}
+          map.invalidateSize();
+          updateMapMarkers();
+        }}
+
+        function buildPopupContent(row) {{
+          const div = document.createElement('div');
+
+          const county = document.createElement('strong');
+          county.textContent = row.cells[0].textContent;
+          div.appendChild(county);
+          div.appendChild(document.createElement('br'));
+
+          const address = row.cells[7].textContent;
+          if (address) {{
+            div.appendChild(document.createTextNode(address));
+            div.appendChild(document.createElement('br'));
+          }}
+
+          div.appendChild(document.createTextNode(
+            `Min bid: ${{row.cells[3].textContent}} · Est. value: ${{row.cells[4].textContent}} · Equity: ${{row.cells[6].textContent}}`
+          ));
+
+          const linksCell = row.cells[9];
+          if (linksCell.querySelector('a')) {{
+            div.appendChild(document.createElement('br'));
+            const linksClone = linksCell.cloneNode(true);
+            while (linksClone.firstChild) div.appendChild(linksClone.firstChild);
+          }}
+
+          return div;
+        }}
+
+        function updateMapMarkers() {{
+          if (!markerLayer) return;
+          markerLayer.clearLayers();
+          const bounds = [];
+          document.querySelectorAll('#dealsBody tr').forEach(row => {{
+            if (row.style.display === 'none') return;
+            const lat = parseFloat(row.dataset.lat);
+            const lon = parseFloat(row.dataset.lon);
+            if (isNaN(lat) || isNaN(lon)) return;
+            const marker = L.marker([lat, lon]).bindPopup(buildPopupContent(row));
+            markerLayer.addLayer(marker);
+            bounds.push([lat, lon]);
+          }});
+          if (bounds.length) map.fitBounds(bounds, {{ padding: [20, 20], maxZoom: 12 }});
+        }}
 
         function formatMoney(v) {{
           return '$' + Math.round(v).toLocaleString();
@@ -227,6 +308,7 @@ def deals_page():
           }});
 
           document.getElementById('resultSummary').textContent = visibleCount + ' of ' + rows.length + ' listings shown';
+          updateMapMarkers();
         }}
 
         function applySort() {{
