@@ -77,6 +77,20 @@ def pct_cell(value: float | None) -> str:
     return f"{value:.0%}" if value is not None else NO_DATA_HTML
 
 
+def extract_city(address: str | None) -> str:
+    # Addresses are formatted "<street>, <city>, TX <zip>" -- the city is
+    # the second-to-last comma segment. Matching location search against
+    # the raw street text (instead of just the city) is what let searches
+    # like "houston" match "1204 S HOUSTON SCHOOL RD, LANCASTER, TX" --
+    # Houston is an extremely common Texas street name, so this false
+    # positive isn't unique to Houston, it'd happen for any city whose
+    # name doubles as a street name elsewhere.
+    if not address:
+        return ""
+    parts = [p.strip() for p in address.split(",")]
+    return parts[-2] if len(parts) >= 3 else ""
+
+
 @app.get("/", response_class=HTMLResponse)
 def deals_page():
     listings = get_all_listings()
@@ -109,7 +123,12 @@ def deals_page():
         # search blob for this one case -- those listings are still
         # findable by their own city/address text, just not by "houston".
         search_county = "" if l["county"] == "Houston" else l["county"]
-        search_text = escape(f"{search_county} {l['precinct']} {l['address']}".lower())
+        # Prefer matching on just the city; only fall back to the full
+        # street address for the ~13% of records too irregularly formatted
+        # to reliably split out a city (no third comma segment).
+        city = extract_city(l["address"])
+        search_place = city if city else (l["address"] or "")
+        search_text = escape(f"{search_county} {l['precinct']} {search_place}".lower())
         value_attr = l["estimated_value"] if l["estimated_value"] is not None else ""
         equity_pct_attr = l["equity_pct"] if l["equity_pct"] is not None else ""
         lat_attr = l["latitude"] if l["latitude"] is not None else ""
