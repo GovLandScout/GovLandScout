@@ -13,11 +13,11 @@ import combined_db
 
 
 def build_maps_url(address: str | None, latitude: float | None, longitude: float | None) -> str | None:
-    """Prefer exact coordinates when available; fall back to an address search."""
-    if latitude is not None and longitude is not None:
-        return f"https://www.google.com/maps?q={latitude},{longitude}"
+    """Prefer the listed address (matches what Google's own geocoder would show); fall back to raw coordinates."""
     if address:
         return f"https://www.google.com/maps/search/?api=1&query={quote(address)}"
+    if latitude is not None and longitude is not None:
+        return f"https://www.google.com/maps?q={latitude},{longitude}"
     return None
 
 

@@ -182,44 +182,75 @@ def deals_page():
             integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="" />
       <style>
         html {{ color-scheme: light; }}
-        body {{ font-family: sans-serif; margin: 2rem; background: #fff; color: #111; }}
-        table {{ border-collapse: collapse; width: 100%; }}
-        th, td {{ border: 1px solid #ccc; padding: 6px 10px; text-align: left; font-size: 0.9rem; color: #111; }}
-        th {{ background: #f5f5f5; position: sticky; top: 0; }}
-        tr:nth-child(even) td {{ background: #fafafa; }}
+        * {{ box-sizing: border-box; }}
+        body {{
+          font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+          margin: 0; padding: 2rem clamp(1rem, 4vw, 3rem);
+          background: #f1f5f9; color: #0f172a;
+        }}
+
+        h1 {{ font-size: 2rem; font-weight: 800; letter-spacing: -0.02em; margin: 0 0 0.4rem; }}
+        .subtitle {{ margin: 0 0 1.5rem; color: #475569; font-size: 0.95rem; line-height: 1.55; max-width: 75ch; }}
+
+        table {{
+          border-collapse: collapse; width: 100%; background: #fff;
+          border: 1px solid #e2e8f0; box-shadow: 0 1px 3px rgba(15, 23, 42, 0.06);
+        }}
+        th, td {{ border-bottom: 1px solid #e2e8f0; padding: 10px 14px; text-align: left; font-size: 0.875rem; color: #1e293b; }}
+        th {{
+          background: #f8fafc; position: sticky; top: 0; font-weight: 700; color: #334155;
+          text-transform: uppercase; font-size: 0.72rem; letter-spacing: 0.04em; border-bottom: 2px solid #e2e8f0;
+        }}
+        tr:nth-child(even) td {{ background: #f8fafc; }}
         tr:nth-child(odd) td {{ background: #fff; }}
-        .nodata {{ color: #999; font-style: italic; }}
-        .thumb {{ display: block; object-fit: cover; border-radius: 4px; }}
+        tr:hover td {{ background: #eff6ff; }}
+        .nodata {{ color: #94a3b8; font-style: italic; }}
+        .thumb {{ display: block; object-fit: cover; border-radius: 6px; }}
+
+        .card {{
+          background: #fff; border: 1px solid #e2e8f0; border-radius: 12px;
+          box-shadow: 0 1px 3px rgba(15, 23, 42, 0.06);
+        }}
 
         .controls {{
           display: flex; flex-wrap: wrap; gap: 1.5rem; align-items: flex-end;
-          background: #f5f5f5; border: 1px solid #ccc; border-radius: 6px;
-          padding: 1rem 1.25rem; margin-bottom: 1rem;
+          padding: 1.25rem 1.5rem; margin-bottom: 1.25rem;
         }}
-        .control {{ display: flex; flex-direction: column; gap: 0.3rem; }}
-        .control label {{ font-size: 0.8rem; font-weight: 600; color: #333; }}
+        .control {{ display: flex; flex-direction: column; gap: 0.35rem; }}
+        .control label {{
+          font-size: 0.75rem; font-weight: 700; color: #475569;
+          text-transform: uppercase; letter-spacing: 0.04em;
+        }}
         .control input[type="text"], .control select {{
-          padding: 0.4rem 0.5rem; font-size: 0.9rem; border: 1px solid #bbb; border-radius: 4px;
+          padding: 0.5rem 0.7rem; font-size: 0.9rem; border: 1px solid #cbd5e1; border-radius: 8px;
+          background: #fff; color: #0f172a;
+        }}
+        .control input[type="text"]:focus, .control select:focus {{
+          outline: none; border-color: #2563eb; box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.15);
         }}
         .range-control {{ min-width: 260px; }}
         .range-control .range-row {{ display: flex; align-items: center; gap: 0.5rem; }}
-        .range-control input[type="range"] {{ flex: 1; }}
-        .range-value {{ font-size: 0.8rem; color: #333; white-space: nowrap; min-width: 5.5rem; }}
+        .range-control input[type="range"] {{ flex: 1; accent-color: #2563eb; }}
+        .range-value {{ font-size: 0.8rem; color: #475569; white-space: nowrap; min-width: 5.5rem; }}
         #resetFilters, #toggleMap {{
-          padding: 0.45rem 0.9rem; font-size: 0.85rem; border: 1px solid #888;
-          border-radius: 4px; background: #fff; cursor: pointer; margin-right: 0.5rem;
+          padding: 0.55rem 1.1rem; font-size: 0.85rem; font-weight: 600; border-radius: 8px;
+          cursor: pointer; margin-right: 0.5rem; border: 1px solid transparent;
+          transition: background 0.15s ease, border-color 0.15s ease;
         }}
-        #resetFilters:hover, #toggleMap:hover {{ background: #eee; }}
-        #resultSummary {{ font-size: 0.85rem; color: #444; }}
-        #mapContainer {{ display: none; height: 500px; margin-bottom: 1rem; border: 1px solid #ccc; border-radius: 6px; }}
+        #resetFilters {{ background: #fff; color: #334155; border-color: #cbd5e1; }}
+        #resetFilters:hover {{ background: #f1f5f9; }}
+        #toggleMap {{ background: #2563eb; color: #fff; }}
+        #toggleMap:hover {{ background: #1d4ed8; }}
+        #resultSummary {{ font-size: 0.85rem; color: #475569; }}
+        #mapContainer {{ height: 500px; margin-bottom: 1.25rem; overflow: hidden; }}
       </style>
     </head>
     <body>
       <h1>Tax Sale Deals</h1>
-      <p>{len(listings)} total listings across all sources. {priced_count} have a full equity calculation and are
+      <p class="subtitle">{len(listings)} total listings across all sources. {priced_count} have a full equity calculation and are
          ranked first below; the rest are shown afterward with "{NO_DATA}" where a field doesn't apply.</p>
 
-      <div class="controls">
+      <div class="controls card">
         <div class="control">
           <label for="locationFilter">Location (county, precinct, or address)</label>
           <input type="text" id="locationFilter" placeholder="e.g. Dallas, Houston, Precinct 4..." oninput="applyFilters()">
@@ -247,7 +278,7 @@ def deals_page():
 
         <div class="control">
           <button id="resetFilters" onclick="resetFilters()">Reset filters</button>
-          <button id="toggleMap" onclick="toggleMap()">Show map</button>
+          <button id="toggleMap" onclick="toggleMap()">Hide map</button>
         </div>
 
         <div class="control">
@@ -255,7 +286,7 @@ def deals_page():
         </div>
       </div>
 
-      <div id="mapContainer"></div>
+      <div id="mapContainer" class="card"></div>
 
       <table id="dealsTable">
         <thead>
@@ -278,6 +309,17 @@ def deals_page():
         let map = null;
         let markerLayer = null;
 
+        function initMap() {{
+          const container = document.getElementById('mapContainer');
+          container.style.display = 'block';
+          map = L.map('mapContainer').setView([31.0, -99.0], 6);  // roughly centered on Texas
+          L.tileLayer('https://{{s}}.tile.openstreetmap.org/{{z}}/{{x}}/{{y}}.png', {{
+            maxZoom: 19,
+            attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+          }}).addTo(map);
+          markerLayer = L.layerGroup().addTo(map);
+        }}
+
         function toggleMap() {{
           const container = document.getElementById('mapContainer');
           const btn = document.getElementById('toggleMap');
@@ -289,14 +331,6 @@ def deals_page():
           }}
           container.style.display = 'block';
           btn.textContent = 'Hide map';
-          if (!map) {{
-            map = L.map('mapContainer').setView([31.0, -99.0], 6);  // roughly centered on Texas
-            L.tileLayer('https://{{s}}.tile.openstreetmap.org/{{z}}/{{x}}/{{y}}.png', {{
-              maxZoom: 19,
-              attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
-            }}).addTo(map);
-            markerLayer = L.layerGroup().addTo(map);
-          }}
           map.invalidateSize();
           updateMapMarkers();
         }}
@@ -430,6 +464,7 @@ def deals_page():
           applySort();
         }}
 
+        initMap();
         applyFilters();
       </script>
     </body>
