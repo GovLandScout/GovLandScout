@@ -215,7 +215,7 @@ def deals_page():
       </style>
     </head>
     <body>
-      <h1>Tax Sale Deals</h1>
+      <h1>GovLandScout - GovLandScout - Texan's Distressed Property Finder</h1>
       <p>GovLandScout is a project attempting to show a state-wide listing of all property being sold by the government+, to try to help Texan's combat rising home prices and a lack of housing affordability. {len(listings)} total listings across all sources. {priced_count} have a full equity calculation and are
          ranked first below; the rest are shown afterward with "{NO_DATA}" where a field doesn't apply.</p>
 
