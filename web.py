@@ -235,6 +235,10 @@ def deals_page():
         tr:hover td {{ background: #eff6ff; }}
         .nodata {{ color: #94a3b8; font-style: italic; }}
         .thumb {{ display: block; object-fit: cover; border-radius: 6px; }}
+        .equity-badge {{
+          display: inline-block; padding: 3px 10px; border-radius: 999px;
+          color: #fff; font-weight: 700; font-size: 0.8rem; white-space: nowrap;
+        }}
 
         .card {{
           background: #fff; border: 1px solid #e2e8f0; border-radius: 12px;
@@ -417,6 +421,35 @@ def deals_page():
           return v != null ? Math.round(v * 100) + '%' : null;
         }}
 
+        // Red -> amber -> green as equity_pct goes from -25% (or worse) up
+        // to 100%. A handful of listings have wildly negative equity (bad
+        // source data -- min bid far exceeding estimated value), so the
+        // color scale clamps at -25% rather than stretching to fit those
+        // outliers, which would otherwise make every normal listing look
+        // uniformly green by comparison. The displayed number is never
+        // clamped, only the color.
+        const EQUITY_COLOR_FLOOR = -0.25;
+        const EQUITY_COLOR_STOPS = [
+          [220, 38, 38],   // red    (-25% and below)
+          [245, 158, 11],  // amber  (0%)
+          [22, 163, 74],   // green  (100%)
+        ];
+
+        function equityColor(pct) {{
+          const clamped = Math.max(EQUITY_COLOR_FLOOR, Math.min(1, pct));
+          const [from, to, t] = clamped <= 0
+            ? [EQUITY_COLOR_STOPS[0], EQUITY_COLOR_STOPS[1], (clamped - EQUITY_COLOR_FLOOR) / -EQUITY_COLOR_FLOOR]
+            : [EQUITY_COLOR_STOPS[1], EQUITY_COLOR_STOPS[2], clamped];
+          const rgb = from.map((c, i) => Math.round(c + (to[i] - c) * t));
+          return `rgb(${{rgb.join(',')}})`;
+        }}
+
+        function equityBadge(pct) {{
+          if (pct == null) return NO_DATA_HTML;
+          const label = formatPercent(pct);
+          return `<span class="equity-badge" style="background:${{equityColor(pct)}}">${{label}}</span>`;
+        }}
+
         function buildRowHtml(l) {{
           const linksParts = [];
           if (l.source_url) linksParts.push(`<a href="${{escapeHtml(l.source_url)}}" target="_blank" rel="noopener noreferrer">Listing</a>`);
@@ -433,7 +466,7 @@ def deals_page():
             + `<td>${{formatCurrency(l.minimum_bid) || NO_DATA_HTML}}</td>`
             + `<td>${{formatCurrency(l.estimated_value) || NO_DATA_HTML}}</td>`
             + `<td>${{formatCurrency(l.equity) || NO_DATA_HTML}}</td>`
-            + `<td>${{formatPercent(l.equity_pct) || NO_DATA_HTML}}</td>`
+            + `<td>${{equityBadge(l.equity_pct)}}</td>`
             + `<td>${{l.address ? escapeHtml(l.address) : NO_DATA_HTML}}</td>`
             + `<td>${{l.description ? escapeHtml(l.description) : NO_DATA_HTML}}</td>`
             + `<td>${{linksHtml}}</td>`
@@ -466,8 +499,17 @@ def deals_page():
           div.appendChild(document.createTextNode(
             `Min bid: ${{formatCurrency(l.minimum_bid) || 'No data available'}} · `
             + `Est. value: ${{formatCurrency(l.estimated_value) || 'No data available'}} · `
-            + `Equity: ${{formatPercent(l.equity_pct) || 'No data available'}}`
+            + `Equity: `
           ));
+          if (l.equity_pct != null) {{
+            const badge = document.createElement('span');
+            badge.className = 'equity-badge';
+            badge.style.background = equityColor(l.equity_pct);
+            badge.textContent = formatPercent(l.equity_pct);
+            div.appendChild(badge);
+          }} else {{
+            div.appendChild(document.createTextNode('No data available'));
+          }}
 
           const links = [];
           if (l.source_url) links.push({{ text: 'Listing', href: l.source_url }});
