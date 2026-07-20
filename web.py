@@ -8,15 +8,19 @@ missing pricing data (or with no independent value estimate at all, like
 the GSA federal auctions) are shown afterward with "No data available"
 in place of the fields that don't apply, rather than being hidden.
 
-The table renders fully server-side (all rows, all data attached), and a
-small vanilla-JS layer filters/sorts the already-rendered rows in the
-browser -- no extra requests, no client-side framework.
+Rows are NOT pre-rendered as HTML server-side -- with 4,000+ listings
+that meant shipping a multi-megabyte page and building tens of thousands
+of DOM nodes on every load, most of which were never looked at. Instead
+the page embeds one compact JSON blob of every listing, and a small
+vanilla-JS layer filters/sorts/paginates it client-side, building only
+the current page's worth of <tr> elements -- no extra requests after the
+initial load, no client-side framework.
 
 Run with: venv/bin/uvicorn web:app --reload
 """
 
+import json
 import math
-from html import escape
 
 from fastapi import FastAPI
 from fastapi.responses import HTMLResponse
@@ -27,7 +31,6 @@ from find_deals import fetch_all_listings
 app = FastAPI(title="GovLandScout")
 
 NO_DATA = "No data available"
-NO_DATA_HTML = f'<span class="nodata">{NO_DATA}</span>'
 
 # Location search matches raw county/address text, which misses listings
 # in a metro's collar counties/suburbs that don't happen to spell out the
@@ -91,14 +94,6 @@ def get_all_listings() -> list[dict]:
     return listings
 
 
-def money_cell(value: float | None) -> str:
-    return f"${value:,.2f}" if value is not None else NO_DATA_HTML
-
-
-def pct_cell(value: float | None) -> str:
-    return f"{value:.0%}" if value is not None else NO_DATA_HTML
-
-
 def extract_city(address: str | None) -> str:
     # Addresses are formatted "<street>, <city>, TX <zip>" -- the city is
     # the second-to-last comma segment. Matching location search against
@@ -122,21 +117,7 @@ def deals_page():
     value_min = math.floor(min(values) / 1000) * 1000 if values else 0
     value_max = math.ceil(max(values) / 1000) * 1000 if values else 0
 
-    def links_cell(l: dict) -> str:
-        parts = []
-        if l["source_url"]:
-            parts.append(f'<a href="{escape(l["source_url"])}" target="_blank" rel="noopener noreferrer">Listing</a>')
-        if l["maps_url"]:
-            parts.append(f'<a href="{escape(l["maps_url"])}" target="_blank" rel="noopener noreferrer">Map</a>')
-        return " · ".join(parts) if parts else NO_DATA_HTML
-
-    def image_cell(l: dict) -> str:
-        if l["latitude"] is None or l["longitude"] is None:
-            return NO_DATA_HTML
-        url = escape(satellite_thumbnail_url(l["latitude"], l["longitude"]))
-        return f'<img src="{url}" width="80" height="80" loading="lazy" alt="Satellite view" class="thumb">'
-
-    def row_html(l: dict) -> str:
+    def listing_for_js(l: dict) -> dict:
         # Texas has an actual Houston County (Crockett/Kennard/Lovelady --
         # ~100mi from Houston, no relation to it) distinct from Harris
         # County, which is where the city of Houston actually is. Searching
@@ -151,28 +132,34 @@ def deals_page():
         city = extract_city(l["address"])
         search_place = city if city else (l["address"] or "")
         metro_terms = " ".join(sorted(COUNTY_METRO_ALIASES.get(l["county"], ())))
-        search_text = escape(f"{search_county} {l['precinct']} {search_place} {metro_terms}".lower())
-        value_attr = l["estimated_value"] if l["estimated_value"] is not None else ""
-        equity_pct_attr = l["equity_pct"] if l["equity_pct"] is not None else ""
-        lat_attr = l["latitude"] if l["latitude"] is not None else ""
-        lon_attr = l["longitude"] if l["longitude"] is not None else ""
-        return (
-            f'<tr data-search="{search_text}" data-value="{value_attr}" data-equity-pct="{equity_pct_attr}"'
-            f' data-lat="{lat_attr}" data-lon="{lon_attr}">'
-            f"<td>{escape(l['county'])}</td>"
-            f"<td>{escape(l['precinct']) if l['precinct'] else NO_DATA_HTML}</td>"
-            f"<td>{escape(l['account_number'])}</td>"
-            f"<td>{money_cell(l['minimum_bid'])}</td>"
-            f"<td>{money_cell(l['estimated_value'])}</td>"
-            f"<td>{money_cell(l['equity'])}</td>"
-            f"<td>{pct_cell(l['equity_pct'])}</td>"
-            f"<td>{escape(l['address']) if l['address'] else NO_DATA_HTML}</td>"
-            f"<td>{escape(l['description'][:120]) if l['description'] else NO_DATA_HTML}</td>"
-            f"<td>{links_cell(l)}</td>"
-            f"<td>{image_cell(l)}</td></tr>"
+        search_text = f"{search_county} {l['precinct']} {search_place} {metro_terms}".lower()
+        image_url = (
+            satellite_thumbnail_url(l["latitude"], l["longitude"])
+            if l["latitude"] is not None and l["longitude"] is not None
+            else None
         )
+        return {
+            "county": l["county"],
+            "precinct": l["precinct"] or None,
+            "account_number": l["account_number"],
+            "minimum_bid": l["minimum_bid"],
+            "estimated_value": l["estimated_value"],
+            "equity": l["equity"],
+            "equity_pct": l["equity_pct"],
+            "address": l["address"] or None,
+            "description": (l["description"][:120] if l["description"] else None),
+            "source_url": l["source_url"],
+            "maps_url": l["maps_url"],
+            "latitude": l["latitude"],
+            "longitude": l["longitude"],
+            "image_url": image_url,
+            "search_text": search_text,
+        }
 
-    rows = "".join(row_html(l) for l in listings)
+    # Escape "</" so a stray "</script>" inside any scraped field (address,
+    # description, ...) can't break out of the script tag this gets embedded
+    # in -- valid both as JSON and as the JS string it becomes once parsed.
+    listings_json = json.dumps([listing_for_js(l) for l in listings]).replace("</", "<\\/")
 
     return f"""
     <html>
@@ -247,6 +234,19 @@ def deals_page():
         #toggleMap:hover {{ background: #1d4ed8; }}
         #resultSummary {{ font-size: 0.85rem; color: #475569; }}
         #mapContainer {{ height: 500px; margin-bottom: 1.25rem; overflow: hidden; }}
+
+        .pagination {{
+          display: flex; align-items: center; justify-content: center; gap: 1rem;
+          padding: 1rem; margin-top: -1px;
+          background: #fff; border: 1px solid #e2e8f0; border-top: none;
+        }}
+        .pagination button {{
+          padding: 0.45rem 0.9rem; font-size: 0.85rem; font-weight: 600; border-radius: 8px;
+          cursor: pointer; border: 1px solid #cbd5e1; background: #fff; color: #334155;
+        }}
+        .pagination button:hover:not(:disabled) {{ background: #f1f5f9; }}
+        .pagination button:disabled {{ opacity: 0.4; cursor: default; }}
+        #pageIndicator {{ font-size: 0.85rem; color: #475569; min-width: 8rem; text-align: center; }}
       </style>
     </head>
     <body>
@@ -299,10 +299,16 @@ def deals_page():
           <th>Est. Value</th><th>Equity</th><th>Equity %</th><th>Address</th><th>Description</th><th>Links</th><th>Image</th>
         </tr>
         </thead>
-        <tbody id="dealsBody">
-        {rows}
-        </tbody>
+        <tbody id="dealsBody"></tbody>
       </table>
+
+      <div class="pagination">
+        <button id="prevPage" onclick="changePage(-1)">&larr; Prev</button>
+        <span id="pageIndicator"></span>
+        <button id="nextPage" onclick="changePage(1)">Next &rarr;</button>
+      </div>
+
+      <script type="application/json" id="listingsData">{listings_json}</script>
 
       <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
               integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
@@ -311,6 +317,12 @@ def deals_page():
       <script>
         const VALUE_MIN = {value_min};
         const VALUE_MAX = {value_max};
+        const PAGE_SIZE = 100;
+        const NO_DATA_HTML = '<span class="nodata">No data available</span>';
+
+        const ALL_LISTINGS = JSON.parse(document.getElementById('listingsData').textContent);
+        let filteredListings = [];
+        let currentPage = 1;
 
         let map = null;
         let markerLayer = null;
@@ -346,40 +358,93 @@ def deals_page():
           updateMapMarkers();
         }}
 
-        function buildPopupContent(row) {{
+        // Escapes text for safe insertion into an HTML string -- used for
+        // every scraped field (address, description, ...) since none of it
+        // can be trusted to be free of "<", "&", etc.
+        function escapeHtml(s) {{
+          const div = document.createElement('div');
+          div.textContent = s;
+          return div.innerHTML;
+        }}
+
+        function formatMoney(v) {{
+          return '$' + Math.round(v).toLocaleString();
+        }}
+
+        function formatCurrency(v) {{
+          return v != null ? '$' + v.toLocaleString(undefined, {{ minimumFractionDigits: 2, maximumFractionDigits: 2 }}) : null;
+        }}
+
+        function formatPercent(v) {{
+          return v != null ? Math.round(v * 100) + '%' : null;
+        }}
+
+        function buildRowHtml(l) {{
+          const linksParts = [];
+          if (l.source_url) linksParts.push(`<a href="${{escapeHtml(l.source_url)}}" target="_blank" rel="noopener noreferrer">Listing</a>`);
+          if (l.maps_url) linksParts.push(`<a href="${{escapeHtml(l.maps_url)}}" target="_blank" rel="noopener noreferrer">Map</a>`);
+          const linksHtml = linksParts.length ? linksParts.join(' · ') : NO_DATA_HTML;
+          const imageHtml = l.image_url
+            ? `<img src="${{escapeHtml(l.image_url)}}" width="80" height="80" loading="lazy" alt="Satellite view" class="thumb">`
+            : NO_DATA_HTML;
+
+          return '<tr>'
+            + `<td>${{escapeHtml(l.county)}}</td>`
+            + `<td>${{l.precinct ? escapeHtml(l.precinct) : NO_DATA_HTML}}</td>`
+            + `<td>${{escapeHtml(l.account_number)}}</td>`
+            + `<td>${{formatCurrency(l.minimum_bid) || NO_DATA_HTML}}</td>`
+            + `<td>${{formatCurrency(l.estimated_value) || NO_DATA_HTML}}</td>`
+            + `<td>${{formatCurrency(l.equity) || NO_DATA_HTML}}</td>`
+            + `<td>${{formatPercent(l.equity_pct) || NO_DATA_HTML}}</td>`
+            + `<td>${{l.address ? escapeHtml(l.address) : NO_DATA_HTML}}</td>`
+            + `<td>${{l.description ? escapeHtml(l.description) : NO_DATA_HTML}}</td>`
+            + `<td>${{linksHtml}}</td>`
+            + `<td>${{imageHtml}}</td></tr>`;
+        }}
+
+        function buildPopupContent(l) {{
           const div = document.createElement('div');
 
-          const imgCell = row.cells[10];
-          const img = imgCell.querySelector('img');
-          if (img) {{
-            const imgClone = img.cloneNode(true);
-            imgClone.removeAttribute('loading');  // it's about to be visible -- fetch it now
-            imgClone.width = 150;
-            imgClone.height = 150;
-            div.appendChild(imgClone);
+          if (l.image_url) {{
+            const img = document.createElement('img');
+            img.src = l.image_url;
+            img.width = 150;
+            img.height = 150;
+            img.alt = 'Satellite view';
+            div.appendChild(img);
             div.appendChild(document.createElement('br'));
           }}
 
           const county = document.createElement('strong');
-          county.textContent = row.cells[0].textContent;
+          county.textContent = l.county;
           div.appendChild(county);
           div.appendChild(document.createElement('br'));
 
-          const address = row.cells[7].textContent;
-          if (address) {{
-            div.appendChild(document.createTextNode(address));
+          if (l.address) {{
+            div.appendChild(document.createTextNode(l.address));
             div.appendChild(document.createElement('br'));
           }}
 
           div.appendChild(document.createTextNode(
-            `Min bid: ${{row.cells[3].textContent}} · Est. value: ${{row.cells[4].textContent}} · Equity: ${{row.cells[6].textContent}}`
+            `Min bid: ${{formatCurrency(l.minimum_bid) || 'No data available'}} · `
+            + `Est. value: ${{formatCurrency(l.estimated_value) || 'No data available'}} · `
+            + `Equity: ${{formatPercent(l.equity_pct) || 'No data available'}}`
           ));
 
-          const linksCell = row.cells[9];
-          if (linksCell.querySelector('a')) {{
+          const links = [];
+          if (l.source_url) links.push({{ text: 'Listing', href: l.source_url }});
+          if (l.maps_url) links.push({{ text: 'Map', href: l.maps_url }});
+          if (links.length) {{
             div.appendChild(document.createElement('br'));
-            const linksClone = linksCell.cloneNode(true);
-            while (linksClone.firstChild) div.appendChild(linksClone.firstChild);
+            links.forEach((link, i) => {{
+              if (i > 0) div.appendChild(document.createTextNode(' · '));
+              const a = document.createElement('a');
+              a.href = link.href;
+              a.target = '_blank';
+              a.rel = 'noopener noreferrer';
+              a.textContent = link.text;
+              div.appendChild(a);
+            }});
           }}
 
           return div;
@@ -389,20 +454,44 @@ def deals_page():
           if (!markerLayer) return;
           markerLayer.clearLayers();
           const bounds = [];
-          document.querySelectorAll('#dealsBody tr').forEach(row => {{
-            if (row.style.display === 'none') return;
-            const lat = parseFloat(row.dataset.lat);
-            const lon = parseFloat(row.dataset.lon);
-            if (isNaN(lat) || isNaN(lon)) return;
-            const marker = L.marker([lat, lon]).bindPopup(buildPopupContent(row));
+          filteredListings.forEach(l => {{
+            if (l.latitude == null || l.longitude == null) return;
+            const marker = L.marker([l.latitude, l.longitude]).bindPopup(buildPopupContent(l));
             markerLayer.addLayer(marker);
-            bounds.push([lat, lon]);
+            bounds.push([l.latitude, l.longitude]);
           }});
           if (bounds.length) map.fitBounds(bounds, {{ padding: [20, 20], maxZoom: 12 }});
         }}
 
-        function formatMoney(v) {{
-          return '$' + Math.round(v).toLocaleString();
+        function renderCurrentPage() {{
+          const totalPages = Math.max(1, Math.ceil(filteredListings.length / PAGE_SIZE));
+          currentPage = Math.min(Math.max(currentPage, 1), totalPages);
+
+          const start = (currentPage - 1) * PAGE_SIZE;
+          const pageItems = filteredListings.slice(start, start + PAGE_SIZE);
+
+          document.getElementById('dealsBody').innerHTML = pageItems.map(buildRowHtml).join('');
+          document.getElementById('pageIndicator').textContent =
+            filteredListings.length ? `Page ${{currentPage}} of ${{totalPages}}` : 'No results';
+          document.getElementById('prevPage').disabled = currentPage <= 1;
+          document.getElementById('nextPage').disabled = currentPage >= totalPages;
+        }}
+
+        function changePage(delta) {{
+          currentPage += delta;
+          renderCurrentPage();
+          document.getElementById('dealsTable').scrollIntoView({{ behavior: 'smooth', block: 'start' }});
+        }}
+
+        function sortListings(arr, dir) {{
+          return arr.slice().sort((a, b) => {{
+            const aHas = a.equity_pct != null;
+            const bHas = b.equity_pct != null;
+            if (aHas && !bHas) return -1;
+            if (!aHas && bHas) return 1;
+            if (!aHas && !bHas) return 0;
+            return dir === 'asc' ? a.equity_pct - b.equity_pct : b.equity_pct - a.equity_pct;
+          }});
         }}
 
         function applyFilters() {{
@@ -420,50 +509,27 @@ def deals_page():
 
           const valueFilterActive = minValue > VALUE_MIN || maxValue < VALUE_MAX;
 
-          const rows = document.querySelectorAll('#dealsBody tr');
-          let visibleCount = 0;
-
-          rows.forEach(row => {{
-            let visible = true;
-
-            if (locationQuery && !row.dataset.search.includes(locationQuery)) {{
-              visible = false;
+          filteredListings = ALL_LISTINGS.filter(l => {{
+            if (locationQuery && !l.search_text.includes(locationQuery)) return false;
+            if (valueFilterActive) {{
+              if (l.estimated_value == null) return false;  // can't evaluate against an active range
+              if (l.estimated_value < minValue || l.estimated_value > maxValue) return false;
             }}
-
-            if (visible && valueFilterActive) {{
-              if (row.dataset.value === '') {{
-                visible = false;  // no estimated value -- can't evaluate against an active range
-              }} else {{
-                const v = parseFloat(row.dataset.value);
-                if (v < minValue || v > maxValue) visible = false;
-              }}
-            }}
-
-            row.style.display = visible ? '' : 'none';
-            if (visible) visibleCount++;
+            return true;
           }});
 
-          document.getElementById('resultSummary').textContent = visibleCount + ' of ' + rows.length + ' listings shown';
+          const dir = document.getElementById('equitySort').value;
+          filteredListings = sortListings(filteredListings, dir);
+
+          currentPage = 1;
+          document.getElementById('resultSummary').textContent =
+            filteredListings.length + ' of ' + ALL_LISTINGS.length + ' listings shown';
+          renderCurrentPage();
           updateMapMarkers();
         }}
 
         function applySort() {{
-          const dir = document.getElementById('equitySort').value;
-          const tbody = document.getElementById('dealsBody');
-          const rows = Array.from(tbody.querySelectorAll('tr'));
-
-          rows.sort((a, b) => {{
-            const aHas = a.dataset.equityPct !== '';
-            const bHas = b.dataset.equityPct !== '';
-            if (aHas && !bHas) return -1;
-            if (!aHas && bHas) return 1;
-            if (!aHas && !bHas) return 0;
-            const av = parseFloat(a.dataset.equityPct);
-            const bv = parseFloat(b.dataset.equityPct);
-            return dir === 'asc' ? av - bv : bv - av;
-          }});
-
-          rows.forEach(row => tbody.appendChild(row));
+          applyFilters();  // re-deriving is cheap for ~4,000 rows and keeps filter+sort in one place
         }}
 
         function resetFilters() {{
@@ -472,7 +538,6 @@ def deals_page():
           document.getElementById('maxValue').value = VALUE_MAX;
           document.getElementById('equitySort').value = 'desc';
           applyFilters();
-          applySort();
         }}
 
         initMap();
