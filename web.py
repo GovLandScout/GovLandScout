@@ -177,7 +177,7 @@ def deals_page():
     return f"""
     <html>
     <head>
-      <title>GovLandScout - Tax Sale Deals</title>
+      <title>GovLandScout</title>
       <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
             integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="" />
       <style>
@@ -246,8 +246,8 @@ def deals_page():
       </style>
     </head>
     <body>
-      <h1>Tax Sale Deals</h1>
-      <p class="subtitle">{len(listings)} total listings across all sources. {priced_count} have a full equity calculation and are
+      <h1>GovLandScout - Texan's Distressed Property Finder</h1>
+      <p class="subtitle">GovLandScout is a project attempting to show a state-wide listing of all property being sold by the government+, to try to help Texan's combat rising home prices and a lack of housing affordability. {len(listings)} total listings across all sources. {priced_count} have a full equity calculation and are
          ranked first below; the rest are shown afterward with "{NO_DATA}" where a field doesn't apply.</p>
 
       <div class="controls card">
