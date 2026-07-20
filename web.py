@@ -180,6 +180,10 @@ def deals_page():
       <title>GovLandScout</title>
       <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
             integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="" />
+      <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css"
+            integrity="sha256-YU3qCpj/P06tdPBJGPax0bm6Q1wltfwjsho5TR4+TYc=" crossorigin="" />
+      <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css"
+            integrity="sha256-YSWCMtmNZNwqex4CEw1nQhvFub2lmU7vcCKP+XVwwXA=" crossorigin="" />
       <style>
         html {{ color-scheme: light; }}
         * {{ box-sizing: border-box; }}
@@ -302,6 +306,8 @@ def deals_page():
 
       <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
               integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+      <script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"
+              integrity="sha256-Hk4dIpcqOSb0hZjgyvFOP+cEmDXUKKNE/tT542ZbNQg=" crossorigin=""></script>
       <script>
         const VALUE_MIN = {value_min};
         const VALUE_MAX = {value_max};
@@ -317,7 +323,12 @@ def deals_page():
             maxZoom: 19,
             attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
           }}).addTo(map);
-          markerLayer = L.layerGroup().addTo(map);
+          // Clustering keeps the map from creating a DOM marker per listing
+          // up front (~3,900 of them) -- it groups nearby pins into a
+          // single icon until zoomed in close enough to separate them,
+          // which is most of what made the map-open-by-default page load
+          // slow to begin with.
+          markerLayer = L.markerClusterGroup({{ maxClusterRadius: 60 }}).addTo(map);
         }}
 
         function toggleMap() {{
