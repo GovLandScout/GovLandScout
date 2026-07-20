@@ -21,14 +21,28 @@ Run with: venv/bin/uvicorn web:app --reload
 
 import json
 import math
+from pathlib import Path
 
-from fastapi import FastAPI
-from fastapi.responses import HTMLResponse
+import requests
+from fastapi import FastAPI, HTTPException
+from fastapi.responses import HTMLResponse, Response
 
 import combined_db
 from find_deals import fetch_all_listings
 
 app = FastAPI(title="GovLandScout")
+
+# Esri's satellite export explicitly disallows caching
+# (Cache-Control: max-age=0, must-revalidate on their responses), so every
+# page load was re-fetching every visible thumbnail from scratch -- the
+# main thing making image loading feel slow. A given listing's coordinates
+# never change, so the image doesn't either; cache it here once and serve
+# it back with real caching headers from then on. Disk cache is ephemeral
+# on Render (wiped on redeploy), but still eliminates re-fetching within a
+# deploy's lifetime, which is the common case.
+THUMBNAIL_CACHE_DIR = Path(__file__).resolve().parent / "thumbnail_cache"
+THUMBNAIL_CACHE_DIR.mkdir(exist_ok=True)
+THUMBNAIL_CACHE_CONTROL = "public, max-age=31536000, immutable"
 
 NO_DATA = "No data available"
 
@@ -74,6 +88,30 @@ def satellite_thumbnail_url(latitude: float, longitude: float) -> str:
     return (
         f"{SATELLITE_EXPORT_URL}?bbox={bbox}&bboxSR=4326&imageSR=4326"
         "&size=160,160&format=jpg&f=image"
+    )
+
+
+def thumbnail_cache_path(latitude: float, longitude: float) -> Path:
+    # Rounded to ~11cm precision -- far tighter than the ~65m thumbnail
+    # itself, just enough to give identical coordinates a stable filename.
+    return THUMBNAIL_CACHE_DIR / f"{latitude:.6f}_{longitude:.6f}.jpg"
+
+
+@app.get("/api/thumbnail")
+def get_thumbnail(lat: float, lon: float):
+    if not (-90 <= lat <= 90 and -180 <= lon <= 180):
+        raise HTTPException(status_code=400, detail="lat/lon out of range")
+
+    cache_path = thumbnail_cache_path(lat, lon)
+    if not cache_path.exists():
+        resp = requests.get(satellite_thumbnail_url(lat, lon), timeout=15)
+        resp.raise_for_status()
+        cache_path.write_bytes(resp.content)
+
+    return Response(
+        content=cache_path.read_bytes(),
+        media_type="image/jpeg",
+        headers={"Cache-Control": THUMBNAIL_CACHE_CONTROL},
     )
 
 
@@ -134,7 +172,7 @@ def deals_page():
         metro_terms = " ".join(sorted(COUNTY_METRO_ALIASES.get(l["county"], ())))
         search_text = f"{search_county} {l['precinct']} {search_place} {metro_terms}".lower()
         image_url = (
-            satellite_thumbnail_url(l["latitude"], l["longitude"])
+            f"/api/thumbnail?lat={l['latitude']}&lon={l['longitude']}"
             if l["latitude"] is not None and l["longitude"] is not None
             else None
         )

@@ -3,3 +3,4 @@ venv/
 __pycache__/
 *.db
 .env
+thumbnail_cache/
