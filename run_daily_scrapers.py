@@ -16,7 +16,7 @@ SCRAPERS = [
     "tdhca_scraper.py", "houston_scraper.py", "pbfcm_scraper.py",
     "mvba_scraper.py",  # respects a mandatory 10s per-request crawl-delay,
     # so this alone adds ~90s to every run (9 documents)
-    "glo_veterans_land_scraper.py", "hud_reo_scraper.py",
+    "glo_veterans_land_scraper.py", "hud_reo_scraper.py", "publicsurplus_scraper.py",
 ]
 
 
