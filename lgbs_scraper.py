@@ -61,12 +61,19 @@ def fetch_all_listings() -> list[dict]:
     return listings
 
 
+# .title() capitalizes only the first letter of each word, missing the
+# internal capital in Texas county names like McLennan and McMullen --
+# same issue and same fix as mvba_scraper.py's COUNTY_NAME_OVERRIDES.
+COUNTY_NAME_OVERRIDES = {"Mclennan": "McLennan", "Mcmullen": "McMullen"}
+
+
 def normalize_county_name(raw_county: str) -> str:
     """'DALLAS COUNTY' -> 'Dallas', 'LA SALLE COUNTY' -> 'La Salle'"""
     name = raw_county.upper()
     if name.endswith(" COUNTY"):
         name = name[: -len(" COUNTY")]
-    return name.title()
+    name = name.title()
+    return COUNTY_NAME_OVERRIDES.get(name, name)
 
 
 def init_db(conn: sqlite3.Connection):

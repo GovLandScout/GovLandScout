@@ -156,9 +156,19 @@ h1 { font-size: 2rem; font-weight: 800; letter-spacing: -0.02em; margin: 0 0 0.4
 .site-nav a:hover { color: #0f172a; }
 .site-nav a.active { color: #2563eb; border-bottom-color: #2563eb; }
 
-table {
-  border-collapse: collapse; width: 100%; background: #fff;
+.table-scroll {
   border: 1px solid #e2e8f0; box-shadow: 0 1px 3px rgba(15, 23, 42, 0.06);
+}
+table {
+  border-collapse: collapse; width: 100%; min-width: 920px; background: #fff;
+}
+/* Below the table's own min-width it needs to scroll horizontally on its
+   own, rather than blowing out the whole page -- but overflow-x: auto
+   also forces overflow-y: auto (a CSS quirk), which breaks the header's
+   position: sticky by scoping it to this wrapper instead of the page. Only
+   worth that trade on viewports where the scroll is actually needed. */
+@media (max-width: 960px) {
+  .table-scroll { overflow-x: auto; }
 }
 th, td { border-bottom: 1px solid #e2e8f0; padding: 10px 14px; text-align: left; font-size: 0.875rem; color: #1e293b; }
 th {
@@ -262,6 +272,9 @@ def page_shell(title: str, active: str, body: str, extra_head: str = "") -> str:
     return f"""
     <html>
     <head>
+      <meta charset="utf-8" />
+      <meta name="viewport" content="width=device-width, initial-scale=1" />
+      <meta name="description" content="A searchable, mappable record of real estate being sold by government entities across Texas -- county tax sales, federal and state surplus, HUD foreclosures, and land bank listings." />
       <title>{title}</title>
       {extra_head}
       <style>{PAGE_CSS}</style>
@@ -384,15 +397,17 @@ def deals_page():
 
       <div id="mapContainer" class="card"></div>
 
-      <table id="dealsTable">
-        <thead>
-        <tr>
-          <th>County</th><th>Precinct</th><th>Account #</th><th>Min Bid</th>
-          <th>Est. Value</th><th>Equity</th><th>Equity %</th><th>Address</th><th>Description</th><th>Links</th><th>Image</th>
-        </tr>
-        </thead>
-        <tbody id="dealsBody"></tbody>
-      </table>
+      <div class="table-scroll">
+        <table id="dealsTable">
+          <thead>
+          <tr>
+            <th>County</th><th>Precinct</th><th>Account #</th><th>Min Bid</th>
+            <th>Est. Value</th><th>Equity</th><th>Equity %</th><th>Address</th><th>Description</th><th>Links</th><th>Image</th>
+          </tr>
+          </thead>
+          <tbody id="dealsBody"></tbody>
+        </table>
+      </div>
 
       <div class="pagination">
         <button id="prevPage" onclick="changePage(-1)">&larr; Prev</button>

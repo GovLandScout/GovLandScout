@@ -37,6 +37,20 @@ def safe_float(value: str | None) -> float | None:
         return None
 
 
+# LGBS has ~40 listings where minimum_bid comes back several times higher
+# than estimated_value (one Hunt County case: three different accounts all
+# carrying the same $58,680 minimum bid against individual values under
+# $5,000) -- almost certainly a bundled/combined judgment amount on LGBS's
+# side rather than a real per-property bid floor. Computing "equity" from
+# that pairing produces nonsense like -1750%, so past this ratio the pair
+# is treated as unreliable rather than shown as a (fake) steep loss.
+MAX_PLAUSIBLE_BID_TO_VALUE_RATIO = 3
+
+
+def has_plausible_pricing(min_bid: float, est_value: float) -> bool:
+    return min_bid <= est_value * MAX_PLAUSIBLE_BID_TO_VALUE_RATIO
+
+
 def fetch_priced_listings(conn: combined_db.PgConnection) -> list[dict]:
     rows = conn.execute("""
         SELECT county, precinct, account_number, minimum_bid, estimated_value, address,
@@ -57,6 +71,8 @@ def fetch_priced_listings(conn: combined_db.PgConnection) -> list[dict]:
         if min_bid <= 0:
             continue  # a $0 minimum bid means "not yet set" (seen on future
             # sale listings), not a real bid floor -- treat as unpriced
+        if not has_plausible_pricing(min_bid, est_value):
+            continue
         equity = est_value - min_bid
         listings.append({
             "county": county,
@@ -101,7 +117,15 @@ def fetch_all_listings(conn: combined_db.PgConnection) -> list[dict]:
         if est_value is not None and est_value <= 0:
             est_value = None
 
-        equity = est_value - min_bid if min_bid is not None and est_value is not None else None
+        reliable = (
+            min_bid is not None and est_value is not None
+            and has_plausible_pricing(min_bid, est_value)
+        )
+        # Min bid and estimated value are still shown as-is either way (real
+        # source data) -- only the derived equity figures get suppressed,
+        # rather than hiding the underlying numbers a visitor could still
+        # judge for themselves.
+        equity = est_value - min_bid if reliable else None
         equity_pct = equity / est_value if equity is not None else None
 
         listings.append({
