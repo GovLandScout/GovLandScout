@@ -260,7 +260,12 @@ LEAFLET_HEAD = """
 
 
 def nav_html(active: str) -> str:
-    pages = [("/", "home", "Home"), ("/impact", "impact", "Impact"), ("/about", "about", "About & Contact")]
+    pages = [
+        ("/", "home", "Home"),
+        ("/impact", "impact", "Impact"),
+        ("/investment-info", "investment", "Investment Info"),
+        ("/about", "about", "About & Contact"),
+    ]
     links = "".join(
         f'<a href="{href}" class="{"active" if key == active else ""}">{label}</a>'
         for href, key, label in pages
@@ -760,6 +765,112 @@ def impact_page():
       </div>
     """
     return page_shell("GovLandScout - Impact", "impact", body)
+
+
+@app.get("/investment-info", response_class=HTMLResponse)
+def investment_info_page():
+    body = """
+      <h1>Investment Information</h1>
+      <p class="subtitle">The listings on this site come from several legally distinct sale types -- what you're
+         buying, what deed you get, and whether the sale can still be undone afterward is different for each one.
+         This page is a plain-language overview, not legal or tax advice -- see the disclaimer at the bottom.</p>
+
+      <div class="card prose" style="padding: 1.5rem 1.75rem; margin-bottom: 1.5rem;">
+        <h2>County tax sales (LGBS, PBFCM, MVBA, Harris County Tax Office)</h2>
+        <p><b>What it is:</b> a county forecloses on a property over unpaid property taxes and sells it at public
+           auction to recover the debt, under Texas Property Tax Code Chapter 34. This is the majority of listings
+           on this site.</p>
+        <p><b>Deed you receive:</b> a Sheriff's or Constable's Deed, which conveys only whatever interest the prior
+           owner actually had -- not a general warranty deed. Title is not guaranteed clear; most title companies
+           won't insure it until any redemption period has passed and, often, until a quiet-title suit has been
+           filed.</p>
+        <p><b>Right of redemption -- this is the big one:</b> under Tax Code &sect;34.21, the former owner (or a
+           lienholder) can buy the property back from you for a period after the sale:</p>
+        <ul>
+          <li><b>2 years</b> for a homestead, agricultural land, or a mineral interest.</li>
+          <li><b>180 days</b> for any other property (commercial, vacant land, etc).</li>
+        </ul>
+        <p>If they redeem, you get your money back plus a statutory premium -- 25% if redeemed in the first year
+           (or the full 180-day window for non-homestead property), 50% in the second year for the 2-year class.
+           Until that period expires, you don't have unrestricted use of the property. Confirm the applicable
+           period and current premium directly against the Tax Code or with an attorney before bidding.</p>
+        <p><b>Payment:</b> typically cash or a cashier's check, due same-day at the courthouse-steps auction.</p>
+
+        <h2>Federal surplus real estate (GSA)</h2>
+        <p><b>What it is:</b> real property the federal government no longer needs, sold via sealed bid or online
+           auction under federal disposal regulations -- unrelated to tax delinquency.</p>
+        <p><b>Deed you receive:</b> typically a quitclaim deed from GSA. No statutory redemption period -- once
+           the sale is final, it's final.</p>
+        <p><b>Payment:</b> terms are set per-listing; read the specific auction's terms before bidding.</p>
+
+        <h2>HUD-owned foreclosed homes</h2>
+        <p><b>What it is:</b> homes HUD acquired after an FHA-insured mortgage went to foreclosure, resold to the
+           public -- a mortgage-default process, not a tax sale.</p>
+        <p><b>Deed you receive:</b> a special warranty deed from HUD. No redemption period. Some listings have an
+           owner-occupant priority window before investors are allowed to bid -- check each listing.</p>
+        <p><b>Payment:</b> financing options vary by listing (some allow FHA financing, some are cash/as-is);
+           confirm on the specific listing page.</p>
+
+        <h2>Texas Veterans Land Board tracts</h2>
+        <p><b>What it is:</b> land a veteran or military member defaulted on a VLB land loan for, resold by the
+           state -- a loan-default process specific to the VLB program, not a tax sale.</p>
+        <p><b>Financing:</b> an approved veteran/military bidder may qualify for a VLB land loan (around 5%
+           down, 30-year term at a rate set by the VLB) -- terms specific to this program, confirm current rates
+           directly with the VLB.</p>
+        <p><b>What to know:</b> confirm redemption/rescission terms directly with the VLB before bidding -- this
+           program's terms are set by the agency and can change; nothing here should be read as current
+           contractual terms.</p>
+
+        <h2>IRS seized real estate</h2>
+        <p><b>What it is:</b> real property seized under Internal Revenue Code &sect;6331 for unpaid <i>federal
+           income</i> taxes (not property taxes), auctioned under IRC &sect;6335 -- a completely different
+           process from a county tax sale, run by the Treasury/IRS.</p>
+        <p><b>Right of redemption:</b> under IRC &sect;6337, the delinquent taxpayer can redeem real property within
+           <b>180 days</b> of the sale by repaying the purchase price plus interest. Same practical effect as a
+           county tax sale's redemption period -- you may not get to keep it.</p>
+        <p><b>Payment:</b> a deposit is due at time of bid with the balance due shortly after; see each Notice of
+           Sale for exact terms.</p>
+
+        <h2>Municipal land bank (Houston Land Bank)</h2>
+        <p><b>What it is:</b> lots that already went through county tax foreclosure and didn't sell (or were
+           transferred to the land bank), resold directly by the city-affiliated land bank -- these already
+           cleared the tax-sale redemption process before being relisted here.</p>
+        <p><b>What to know:</b> many listings carry a required minimum development investment (you must build to a
+           minimum value within a set time) as a condition of the below-market price -- read that requirement on
+           each listing, it's not optional.</p>
+
+        <h2>State/local government surplus (PublicSurplus)</h2>
+        <p><b>What it is:</b> general surplus property auctioned by a state agency, county, or city -- terms vary
+           by seller and by listing; read each auction's specific terms before bidding.</p>
+      </div>
+
+      <div class="card prose" style="padding: 1.5rem 1.75rem; margin-bottom: 1.5rem;">
+        <h2>What's common across nearly all of these</h2>
+        <p><b>Sold as-is.</b> None of these sources offer a warranty on the property's physical condition. You
+           generally cannot inspect the interior beforehand, and you're bidding on whatever the public record
+           says -- verify everything you can before bidding, not after.</p>
+        <p><b>Title risk varies a lot by sale type.</b> A tax deed or IRS deed is not the same as a warranty deed
+           from a normal real estate closing -- liens, easements, or ownership disputes can survive the sale
+           depending on the type. Title insurance may not be available immediately, or at all, for some of these.
+           A title company or real estate attorney can tell you what actually transfers clean for a specific
+           property.</p>
+        <p><b>You take on future property taxes</b> from the date of purchase forward, regardless of sale type.</p>
+        <p><b>Financing is usually not available at the point of sale.</b> Most of these require cash or certified
+           funds; conventional mortgages generally aren't part of the bidding process itself.</p>
+      </div>
+
+      <div class="card" style="padding: 1.5rem 1.75rem; border-color: #cbd5e1;">
+        <h2 style="margin-top:0;">This is not legal, tax, or financial advice</h2>
+        <p class="prose" style="margin-bottom:0;">Redemption periods, premiums, deed types, and financing terms
+           summarized above reflect general Texas and federal rules as commonly understood, but statutes get
+           amended, agency terms change, and every property has its own facts. Nothing on this page is a
+           substitute for advice from a licensed real estate attorney, title company, or tax professional, and
+           you should independently verify current terms with the listing agency (linked from every listing)
+           before bidding on or purchasing anything. GovLandScout is an independent research tool and is not
+           affiliated with any county, state, or federal agency.</p>
+      </div>
+    """
+    return page_shell("GovLandScout - Investment Info", "investment", body)
 
 
 @app.get("/about", response_class=HTMLResponse)
