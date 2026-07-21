@@ -21,6 +21,7 @@ Run with: venv/bin/uvicorn web:app --reload
 
 import json
 import math
+from html import escape
 from pathlib import Path
 
 import requests
@@ -132,6 +133,147 @@ def get_all_listings() -> list[dict]:
     return listings
 
 
+PAGE_CSS = """
+html { color-scheme: light; }
+* { box-sizing: border-box; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  margin: 0; padding: 2rem clamp(1rem, 4vw, 3rem);
+  background: #f1f5f9; color: #0f172a;
+}
+
+h1 { font-size: 2rem; font-weight: 800; letter-spacing: -0.02em; margin: 0 0 0.4rem; }
+.subtitle { margin: 0 0 1.5rem; color: #475569; font-size: 0.95rem; line-height: 1.55; max-width: 75ch; }
+
+.site-nav {
+  display: flex; gap: 0.25rem; margin-bottom: 1.75rem;
+  border-bottom: 1px solid #e2e8f0;
+}
+.site-nav a {
+  padding: 0.75rem 1.1rem; text-decoration: none; color: #475569;
+  font-weight: 600; font-size: 0.9rem; border-bottom: 2px solid transparent; margin-bottom: -1px;
+}
+.site-nav a:hover { color: #0f172a; }
+.site-nav a.active { color: #2563eb; border-bottom-color: #2563eb; }
+
+table {
+  border-collapse: collapse; width: 100%; background: #fff;
+  border: 1px solid #e2e8f0; box-shadow: 0 1px 3px rgba(15, 23, 42, 0.06);
+}
+th, td { border-bottom: 1px solid #e2e8f0; padding: 10px 14px; text-align: left; font-size: 0.875rem; color: #1e293b; }
+th {
+  background: #f8fafc; position: sticky; top: 0; font-weight: 700; color: #334155;
+  text-transform: uppercase; font-size: 0.72rem; letter-spacing: 0.04em; border-bottom: 2px solid #e2e8f0;
+}
+tr:nth-child(even) td { background: #f8fafc; }
+tr:nth-child(odd) td { background: #fff; }
+tr:hover td { background: #eff6ff; }
+.nodata { color: #94a3b8; font-style: italic; }
+.thumb { display: block; object-fit: cover; border-radius: 6px; }
+.equity-badge {
+  display: inline-block; padding: 3px 10px; border-radius: 999px;
+  color: #fff; font-weight: 700; font-size: 0.8rem; white-space: nowrap;
+}
+
+.card {
+  background: #fff; border: 1px solid #e2e8f0; border-radius: 12px;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.06);
+}
+
+.controls {
+  display: flex; flex-wrap: wrap; gap: 1.5rem; align-items: flex-end;
+  padding: 1.25rem 1.5rem; margin-bottom: 1.25rem;
+}
+.control { display: flex; flex-direction: column; gap: 0.35rem; }
+.control label {
+  font-size: 0.75rem; font-weight: 700; color: #475569;
+  text-transform: uppercase; letter-spacing: 0.04em;
+}
+.control input[type="text"], .control select {
+  padding: 0.5rem 0.7rem; font-size: 0.9rem; border: 1px solid #cbd5e1; border-radius: 8px;
+  background: #fff; color: #0f172a;
+}
+.control input[type="text"]:focus, .control select:focus {
+  outline: none; border-color: #2563eb; box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.15);
+}
+.range-control { min-width: 260px; }
+.range-control .range-row { display: flex; align-items: center; gap: 0.5rem; }
+.range-control input[type="range"] { flex: 1; accent-color: #2563eb; }
+.range-value { font-size: 0.8rem; color: #475569; white-space: nowrap; min-width: 5.5rem; }
+#resetFilters, #toggleMap {
+  padding: 0.55rem 1.1rem; font-size: 0.85rem; font-weight: 600; border-radius: 8px;
+  cursor: pointer; margin-right: 0.5rem; border: 1px solid transparent;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+#resetFilters { background: #fff; color: #334155; border-color: #cbd5e1; }
+#resetFilters:hover { background: #f1f5f9; }
+#toggleMap { background: #2563eb; color: #fff; }
+#toggleMap:hover { background: #1d4ed8; }
+#resultSummary { font-size: 0.85rem; color: #475569; }
+#mapContainer { height: 500px; margin-bottom: 1.25rem; overflow: hidden; }
+
+.pagination {
+  display: flex; align-items: center; justify-content: center; gap: 1rem;
+  padding: 1rem; margin-top: -1px;
+  background: #fff; border: 1px solid #e2e8f0; border-top: none;
+}
+.pagination button {
+  padding: 0.45rem 0.9rem; font-size: 0.85rem; font-weight: 600; border-radius: 8px;
+  cursor: pointer; border: 1px solid #cbd5e1; background: #fff; color: #334155;
+}
+.pagination button:hover:not(:disabled) { background: #f1f5f9; }
+.pagination button:disabled { opacity: 0.4; cursor: default; }
+#pageIndicator { font-size: 0.85rem; color: #475569; min-width: 8rem; text-align: center; }
+
+.stats-grid {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 1.25rem; margin-bottom: 2rem;
+}
+.stat-card { padding: 1.5rem; }
+.stat-card .stat-value { font-size: 2.25rem; font-weight: 800; color: #2563eb; letter-spacing: -0.02em; }
+.stat-card .stat-label { margin-top: 0.35rem; color: #475569; font-size: 0.9rem; }
+.prose { max-width: 75ch; line-height: 1.65; color: #1e293b; font-size: 0.95rem; }
+.prose h2 { font-size: 1.25rem; margin: 2rem 0 0.75rem; }
+.prose h2:first-child { margin-top: 0; }
+.prose a { color: #2563eb; }
+.contact-card { padding: 1.5rem; max-width: 32rem; }
+"""
+
+LEAFLET_HEAD = """
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+      integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="" />
+<link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css"
+      integrity="sha256-YU3qCpj/P06tdPBJGPax0bm6Q1wltfwjsho5TR4+TYc=" crossorigin="" />
+<link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css"
+      integrity="sha256-YSWCMtmNZNwqex4CEw1nQhvFub2lmU7vcCKP+XVwwXA=" crossorigin="" />
+"""
+
+
+def nav_html(active: str) -> str:
+    pages = [("/", "home", "Home"), ("/impact", "impact", "Impact"), ("/about", "about", "About & Contact")]
+    links = "".join(
+        f'<a href="{href}" class="{"active" if key == active else ""}">{label}</a>'
+        for href, key, label in pages
+    )
+    return f'<nav class="site-nav">{links}</nav>'
+
+
+def page_shell(title: str, active: str, body: str, extra_head: str = "") -> str:
+    return f"""
+    <html>
+    <head>
+      <title>{title}</title>
+      {extra_head}
+      <style>{PAGE_CSS}</style>
+    </head>
+    <body>
+      {nav_html(active)}
+      {body}
+    </body>
+    </html>
+    """
+
+
 def extract_city(address: str | None) -> str:
     # Addresses are formatted "<street>, <city>, TX <zip>" -- the city is
     # the second-to-last comma segment. Matching location search against
@@ -199,99 +341,7 @@ def deals_page():
     # in -- valid both as JSON and as the JS string it becomes once parsed.
     listings_json = json.dumps([listing_for_js(l) for l in listings]).replace("</", "<\\/")
 
-    return f"""
-    <html>
-    <head>
-      <title>GovLandScout</title>
-      <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
-            integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="" />
-      <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css"
-            integrity="sha256-YU3qCpj/P06tdPBJGPax0bm6Q1wltfwjsho5TR4+TYc=" crossorigin="" />
-      <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css"
-            integrity="sha256-YSWCMtmNZNwqex4CEw1nQhvFub2lmU7vcCKP+XVwwXA=" crossorigin="" />
-      <style>
-        html {{ color-scheme: light; }}
-        * {{ box-sizing: border-box; }}
-        body {{
-          font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-          margin: 0; padding: 2rem clamp(1rem, 4vw, 3rem);
-          background: #f1f5f9; color: #0f172a;
-        }}
-
-        h1 {{ font-size: 2rem; font-weight: 800; letter-spacing: -0.02em; margin: 0 0 0.4rem; }}
-        .subtitle {{ margin: 0 0 1.5rem; color: #475569; font-size: 0.95rem; line-height: 1.55; max-width: 75ch; }}
-
-        table {{
-          border-collapse: collapse; width: 100%; background: #fff;
-          border: 1px solid #e2e8f0; box-shadow: 0 1px 3px rgba(15, 23, 42, 0.06);
-        }}
-        th, td {{ border-bottom: 1px solid #e2e8f0; padding: 10px 14px; text-align: left; font-size: 0.875rem; color: #1e293b; }}
-        th {{
-          background: #f8fafc; position: sticky; top: 0; font-weight: 700; color: #334155;
-          text-transform: uppercase; font-size: 0.72rem; letter-spacing: 0.04em; border-bottom: 2px solid #e2e8f0;
-        }}
-        tr:nth-child(even) td {{ background: #f8fafc; }}
-        tr:nth-child(odd) td {{ background: #fff; }}
-        tr:hover td {{ background: #eff6ff; }}
-        .nodata {{ color: #94a3b8; font-style: italic; }}
-        .thumb {{ display: block; object-fit: cover; border-radius: 6px; }}
-        .equity-badge {{
-          display: inline-block; padding: 3px 10px; border-radius: 999px;
-          color: #fff; font-weight: 700; font-size: 0.8rem; white-space: nowrap;
-        }}
-
-        .card {{
-          background: #fff; border: 1px solid #e2e8f0; border-radius: 12px;
-          box-shadow: 0 1px 3px rgba(15, 23, 42, 0.06);
-        }}
-
-        .controls {{
-          display: flex; flex-wrap: wrap; gap: 1.5rem; align-items: flex-end;
-          padding: 1.25rem 1.5rem; margin-bottom: 1.25rem;
-        }}
-        .control {{ display: flex; flex-direction: column; gap: 0.35rem; }}
-        .control label {{
-          font-size: 0.75rem; font-weight: 700; color: #475569;
-          text-transform: uppercase; letter-spacing: 0.04em;
-        }}
-        .control input[type="text"], .control select {{
-          padding: 0.5rem 0.7rem; font-size: 0.9rem; border: 1px solid #cbd5e1; border-radius: 8px;
-          background: #fff; color: #0f172a;
-        }}
-        .control input[type="text"]:focus, .control select:focus {{
-          outline: none; border-color: #2563eb; box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.15);
-        }}
-        .range-control {{ min-width: 260px; }}
-        .range-control .range-row {{ display: flex; align-items: center; gap: 0.5rem; }}
-        .range-control input[type="range"] {{ flex: 1; accent-color: #2563eb; }}
-        .range-value {{ font-size: 0.8rem; color: #475569; white-space: nowrap; min-width: 5.5rem; }}
-        #resetFilters, #toggleMap {{
-          padding: 0.55rem 1.1rem; font-size: 0.85rem; font-weight: 600; border-radius: 8px;
-          cursor: pointer; margin-right: 0.5rem; border: 1px solid transparent;
-          transition: background 0.15s ease, border-color 0.15s ease;
-        }}
-        #resetFilters {{ background: #fff; color: #334155; border-color: #cbd5e1; }}
-        #resetFilters:hover {{ background: #f1f5f9; }}
-        #toggleMap {{ background: #2563eb; color: #fff; }}
-        #toggleMap:hover {{ background: #1d4ed8; }}
-        #resultSummary {{ font-size: 0.85rem; color: #475569; }}
-        #mapContainer {{ height: 500px; margin-bottom: 1.25rem; overflow: hidden; }}
-
-        .pagination {{
-          display: flex; align-items: center; justify-content: center; gap: 1rem;
-          padding: 1rem; margin-top: -1px;
-          background: #fff; border: 1px solid #e2e8f0; border-top: none;
-        }}
-        .pagination button {{
-          padding: 0.45rem 0.9rem; font-size: 0.85rem; font-weight: 600; border-radius: 8px;
-          cursor: pointer; border: 1px solid #cbd5e1; background: #fff; color: #334155;
-        }}
-        .pagination button:hover:not(:disabled) {{ background: #f1f5f9; }}
-        .pagination button:disabled {{ opacity: 0.4; cursor: default; }}
-        #pageIndicator {{ font-size: 0.85rem; color: #475569; min-width: 8rem; text-align: center; }}
-      </style>
-    </head>
-    <body>
+    body = f"""
       <h1>GovLandScout - Texan's Distressed Property Finder</h1>
       <p class="subtitle">GovLandScout is a project attempting to show a state-wide listing of all property being sold by the government+, to try to help Texan's combat rising home prices and a lack of housing affordability. {len(listings)} total listings across all sources. {priced_count} have a full equity calculation and are
          ranked first below; the rest are shown afterward with "{NO_DATA}" where a field doesn't apply.</p>
@@ -623,9 +673,115 @@ def deals_page():
         initMap();
         applyFilters();
       </script>
-    </body>
-    </html>
     """
+
+    return page_shell("GovLandScout", "home", body, extra_head=LEAFLET_HEAD)
+
+
+# Friendly labels for the raw `source` domains stored per listing --
+# just for display on the Impact page, doesn't affect scraping/storage.
+SOURCE_LABELS = {
+    "hctax.net": "Harris County Tax Office",
+    "taxsales.lgbs.com": "Linebarger Goggan Blair & Sampson (tax trustee)",
+    "pbfcm.com": "Perdue Brandon Fielder Collins & Mott (tax trustee)",
+    "mvbalaw.com": "McCreary Veselka Bragg & Allen (tax trustee)",
+    "public.tdhca.state.tx.us": "Texas Dept. of Housing & Community Affairs",
+    "realestatesales.gov": "GSA Federal Real Estate Sales",
+    "glo.texas.gov": "Texas Veterans Land Board",
+    "hudgis-hud.opendata.arcgis.com": "HUD Foreclosed Homes (Open Data)",
+    "houstontx.gov": "City of Houston Real Property",
+    "publicsurplus.com": "PublicSurplus (Texas government sellers)",
+}
+
+
+@app.get("/impact", response_class=HTMLResponse)
+def impact_page():
+    conn = combined_db.get_connection()
+    listings = fetch_all_listings(conn)
+    sources = [r[0] for r in conn.execute("SELECT DISTINCT source FROM listings ORDER BY source").fetchall()]
+    conn.close()
+
+    total = len(listings)
+    counties = len({l["county"] for l in listings})
+    with_coords = sum(1 for l in listings if l["latitude"] is not None)
+    priced_with_equity = [l for l in listings if l["equity"] is not None and l["equity"] > 0]
+    total_equity = sum(l["equity"] for l in priced_with_equity)
+
+    stats = [
+        (f"{total:,}", "Total listings tracked"),
+        (f"{counties}", "Texas counties covered"),
+        (f"{len(sources)}", "Independent data sources"),
+        (f"{with_coords:,}", "Listings mapped with real coordinates"),
+        (f"{len(priced_with_equity):,}", "Listings with a calculated equity opportunity"),
+        (f"${total_equity:,.0f}", "Total estimated equity represented"),
+    ]
+    stat_cards = "".join(
+        f'<div class="card stat-card"><div class="stat-value">{escape(value)}</div>'
+        f'<div class="stat-label">{escape(label)}</div></div>'
+        for value, label in stats
+    )
+
+    source_items = "".join(
+        f"<li>{escape(SOURCE_LABELS.get(s, s))} <span class=\"nodata\">({escape(s)})</span></li>"
+        for s in sources
+    )
+
+    body = f"""
+      <h1>Impact &amp; Numbers</h1>
+      <p class="subtitle">A live snapshot of what GovLandScout is currently tracking across Texas, recomputed from the database on every page load.</p>
+
+      <div class="stats-grid">{stat_cards}</div>
+
+      <div class="card prose" style="padding: 1.5rem 1.75rem;">
+        <h2>What "equity" means here</h2>
+        <p>For listings with both a minimum bid and an independent estimated value, equity is estimated value minus
+           minimum bid -- roughly, how much value a winning bidder could be getting relative to what the property
+           is actually worth. Not every source provides an independent value estimate (e.g. federal and state
+           surplus listings), so equity can't be calculated for all {total:,} listings -- only the
+           {len(priced_with_equity):,} shown above.</p>
+
+        <h2>Where the data comes from</h2>
+        <ul>{source_items}</ul>
+      </div>
+    """
+    return page_shell("GovLandScout - Impact", "impact", body)
+
+
+@app.get("/about", response_class=HTMLResponse)
+def about_page():
+    body = """
+      <h1>About &amp; Contact</h1>
+
+      <div class="card prose" style="padding: 1.5rem 1.75rem; margin-bottom: 1.5rem;">
+        <h2>What this is</h2>
+        <p>GovLandScout aggregates real estate being sold by government entities across Texas -- county tax
+           foreclosure sales, federal and state surplus property, HUD-owned foreclosed homes, and Veterans Land
+           Board tracts -- into one searchable, mappable place. Rising home prices and limited housing
+           affordability make it harder to find a way in; these listings are already public, just scattered
+           across dozens of separate county, state, and federal sites. This project pulls them together.</p>
+
+        <h2>How it works</h2>
+        <p>A set of scrapers run on a daily schedule, each pulling directly from an official or government-retained
+           source (see the <a href="/impact">Impact page</a> for the full list), normalizing everything into one
+           shared database. Nothing here is editorialized -- prices, descriptions, and account numbers are shown
+           as published by the source, and every listing links back to where it came from so you can verify it
+           yourself before bidding on anything.</p>
+
+        <h2>A word of caution</h2>
+        <p>This is an independent research tool, not legal or financial advice, and not affiliated with any county,
+           state, or federal agency. Data can be outdated, incomplete, or contain source errors. Always verify
+           details directly with the listing agency before bidding on or purchasing any property.</p>
+      </div>
+
+      <div class="card contact-card">
+        <h2 style="margin-top:0;">Contact</h2>
+        <p>Questions, corrections, or something looks wrong? Reach out at
+           <a href="mailto:govlandscout@gmail.com">govlandscout@gmail.com</a>.</p>
+        <p style="margin-bottom:0;">The project's source is publicly available on
+           <a href="https://github.com/GovLandScout/GovLandScout" target="_blank" rel="noopener noreferrer">GitHub</a>.</p>
+      </div>
+    """
+    return page_shell("GovLandScout - About", "about", body)
 
 
 @app.get("/api/deals")
