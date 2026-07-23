@@ -21,15 +21,16 @@ Run with: venv/bin/uvicorn web:app --reload
 
 import json
 import math
+import uuid
 from html import escape
 from pathlib import Path
 
 import requests
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import HTMLResponse, Response
+from fastapi import FastAPI, Form, HTTPException
+from fastapi.responses import HTMLResponse, RedirectResponse, Response
 
 import combined_db
-from find_deals import fetch_all_listings
+from find_deals import fetch_all_listings, safe_float
 
 app = FastAPI(title="GovLandScout")
 
@@ -114,6 +115,31 @@ def get_thumbnail(lat: float, lon: float):
         media_type="image/jpeg",
         headers={"Cache-Control": THUMBNAIL_CACHE_CONTROL},
     )
+
+
+# Same free, keyless Census batch geocoder geocode_backfill.py uses, just
+# the single-address variant -- appropriate here since a manual submission
+# needs its one address resolved synchronously, in the request itself,
+# rather than queued for a batch run.
+SINGLE_GEOCODE_URL = "https://geocoding.geo.census.gov/geocoder/locations/onelineaddress"
+
+
+def geocode_address(address: str) -> tuple[float, float] | None:
+    """Best-effort: a manual listing is still worth saving if this fails or times out."""
+    try:
+        resp = requests.get(
+            SINGLE_GEOCODE_URL,
+            params={"address": address, "benchmark": "Public_AR_Current", "format": "json"},
+            timeout=10,
+        )
+        resp.raise_for_status()
+        matches = resp.json()["result"]["addressMatches"]
+        if not matches:
+            return None
+        coords = matches[0]["coordinates"]
+        return coords["y"], coords["x"]  # (lat, lon)
+    except (requests.RequestException, KeyError, IndexError, ValueError):
+        return None
 
 
 def get_all_listings() -> list[dict]:
@@ -247,6 +273,40 @@ tr:hover td { background: #eff6ff; }
 .prose h2:first-child { margin-top: 0; }
 .prose a { color: #2563eb; }
 .contact-card { padding: 1.5rem; max-width: 32rem; }
+
+.manual-badge {
+  display: inline-block; padding: 1px 8px; border-radius: 999px;
+  background: #fef3c7; color: #92400e; font-weight: 700; font-size: 0.68rem;
+  text-transform: uppercase; letter-spacing: 0.03em; vertical-align: middle;
+}
+
+.manual-form { padding: 1.5rem 1.75rem; max-width: 40rem; }
+.manual-form .field { display: flex; flex-direction: column; gap: 0.35rem; margin-bottom: 1.1rem; }
+.manual-form label { font-size: 0.85rem; font-weight: 700; color: #334155; }
+.manual-form .hint { font-size: 0.78rem; color: #64748b; }
+.manual-form input[type="text"], .manual-form input[type="url"], .manual-form textarea {
+  padding: 0.6rem 0.75rem; font-size: 0.9rem; border: 1px solid #cbd5e1; border-radius: 8px;
+  background: #fff; color: #0f172a; font-family: inherit;
+}
+.manual-form input:focus, .manual-form textarea:focus {
+  outline: none; border-color: #2563eb; box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.15);
+}
+.manual-form textarea { resize: vertical; min-height: 5rem; }
+.manual-form .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
+.manual-form button {
+  padding: 0.65rem 1.4rem; font-size: 0.9rem; font-weight: 700; border-radius: 8px;
+  cursor: pointer; border: none; background: #2563eb; color: #fff;
+}
+.manual-form button:hover { background: #1d4ed8; }
+.form-banner {
+  padding: 0.9rem 1.1rem; border-radius: 8px; font-size: 0.88rem; margin-bottom: 1.25rem;
+  max-width: 40rem;
+}
+.form-banner.success { background: #dcfce7; color: #166534; border: 1px solid #86efac; }
+.form-banner.error { background: #fee2e2; color: #991b1b; border: 1px solid #fca5a5; }
+/* Honeypot field -- present in the DOM for bots that fill in every field,
+   invisible and unreachable by tab order for real visitors. */
+.hp-field { position: absolute; left: -9999px; width: 1px; height: 1px; overflow: hidden; }
 """
 
 LEAFLET_HEAD = """
@@ -264,6 +324,7 @@ def nav_html(active: str) -> str:
         ("/", "home", "Home"),
         ("/impact", "impact", "Impact"),
         ("/investment-info", "investment", "Investment Info"),
+        ("/manual-upload", "manual-upload", "Manual property uploads"),
         ("/about", "about", "About & Contact"),
     ]
     links = "".join(
@@ -340,6 +401,7 @@ def deals_page():
             "county": l["county"],
             "precinct": l["precinct"] or None,
             "account_number": l["account_number"],
+            "is_manual": l["source"] == "manual",
             "minimum_bid": l["minimum_bid"],
             "estimated_value": l["estimated_value"],
             "equity": l["equity"],
@@ -529,8 +591,12 @@ def deals_page():
             ? `<img src="${{escapeHtml(l.image_url)}}" width="80" height="80" loading="lazy" alt="Satellite view" class="thumb">`
             : NO_DATA_HTML;
 
+          const countyHtml = l.is_manual
+            ? `${{escapeHtml(l.county)}} <span class="manual-badge" title="Submitted by a site visitor, not from an official government source">User submitted</span>`
+            : escapeHtml(l.county);
+
           return '<tr>'
-            + `<td>${{escapeHtml(l.county)}}</td>`
+            + `<td>${{countyHtml}}</td>`
             + `<td>${{l.precinct ? escapeHtml(l.precinct) : NO_DATA_HTML}}</td>`
             + `<td>${{escapeHtml(l.account_number)}}</td>`
             + `<td>${{formatCurrency(l.minimum_bid) || NO_DATA_HTML}}</td>`
@@ -559,6 +625,14 @@ def deals_page():
           const county = document.createElement('strong');
           county.textContent = l.county;
           div.appendChild(county);
+          if (l.is_manual) {{
+            const badge = document.createElement('span');
+            badge.className = 'manual-badge';
+            badge.title = 'Submitted by a site visitor, not from an official government source';
+            badge.textContent = 'User submitted';
+            div.appendChild(document.createTextNode(' '));
+            div.appendChild(badge);
+          }}
           div.appendChild(document.createElement('br'));
 
           if (l.address) {{
@@ -711,6 +785,7 @@ SOURCE_LABELS = {
     "hudgis-hud.opendata.arcgis.com": "HUD Foreclosed Homes (Open Data)",
     "houstontx.gov": "City of Houston Real Property",
     "publicsurplus.com": "PublicSurplus (Texas government sellers)",
+    "manual": "User-submitted (unverified)",
 }
 
 
@@ -871,6 +946,133 @@ def investment_info_page():
       </div>
     """
     return page_shell("GovLandScout - Investment Info", "investment", body)
+
+
+def manual_upload_form_html(banner: str = "") -> str:
+    return f"""
+      <h1>Manual Property Uploads</h1>
+      <p class="subtitle">Know of a government-owned or distressed property that isn't showing up here yet?
+         Add it below. Manually submitted properties are shown alongside scraped listings but are clearly
+         labeled "User submitted" and are <b>not</b> independently verified the way the scraped sources are --
+         see the <a href="/about">About page</a> for how the rest of the site's data is sourced.</p>
+
+      {banner}
+
+      <form class="card manual-form" method="post" action="/manual-upload">
+        <div class="field hp-field" aria-hidden="true">
+          <label for="website">Leave this field blank</label>
+          <input type="text" id="website" name="website" tabindex="-1" autocomplete="off">
+        </div>
+
+        <div class="field">
+          <label for="county">County *</label>
+          <input type="text" id="county" name="county" placeholder="e.g. Harris" required maxlength="100">
+        </div>
+
+        <div class="field">
+          <label for="address">Address *</label>
+          <input type="text" id="address" name="address" placeholder="123 Main St, Houston, TX 77002" required maxlength="300">
+          <span class="hint">Used to plot the property on the map -- format as street, city, state, zip if possible.</span>
+        </div>
+
+        <div class="two-col">
+          <div class="field">
+            <label for="minimum_bid">Minimum bid / asking price</label>
+            <input type="text" id="minimum_bid" name="minimum_bid" placeholder="e.g. 15000" maxlength="20">
+          </div>
+          <div class="field">
+            <label for="estimated_value">Estimated value</label>
+            <input type="text" id="estimated_value" name="estimated_value" placeholder="e.g. 42000" maxlength="20">
+          </div>
+        </div>
+
+        <div class="field">
+          <label for="description">Description</label>
+          <textarea id="description" name="description" maxlength="2000" placeholder="Anything else worth noting -- condition, how you found it, etc."></textarea>
+        </div>
+
+        <div class="field">
+          <label for="source_url">Source link</label>
+          <input type="url" id="source_url" name="source_url" placeholder="https://..." maxlength="500">
+          <span class="hint">Optional -- a link to where you found this (a listing, a county site, a news article).</span>
+        </div>
+
+        <button type="submit">Submit property</button>
+      </form>
+    """
+
+
+@app.get("/manual-upload", response_class=HTMLResponse)
+def manual_upload_page(success: str | None = None, error: str | None = None):
+    banner = ""
+    if success:
+        banner = '<div class="form-banner success">Thanks -- your property was added and now appears in the listings on the home page.</div>'
+    elif error:
+        banner = f'<div class="form-banner error">{escape(error)}</div>'
+    return page_shell("GovLandScout - Manual Property Uploads", "manual-upload", manual_upload_form_html(banner))
+
+
+@app.post("/manual-upload")
+def manual_upload_submit(
+    county: str = Form(...),
+    address: str = Form(...),
+    minimum_bid: str = Form(""),
+    estimated_value: str = Form(""),
+    description: str = Form(""),
+    source_url: str = Form(""),
+    website: str = Form(""),  # honeypot -- real visitors never see or fill this in
+):
+    # Bots that blindly fill every field trip the honeypot. Don't tip them
+    # off with an error -- just pretend it worked and skip the insert.
+    if website.strip():
+        return RedirectResponse("/manual-upload?success=1", status_code=303)
+
+    county = county.strip()
+    address = address.strip()
+    if not county or not address:
+        return RedirectResponse("/manual-upload?error=County and address are required.", status_code=303)
+
+    min_bid_str = None
+    if minimum_bid.strip():
+        if safe_float(minimum_bid.strip()) is None:
+            return RedirectResponse("/manual-upload?error=Minimum bid must be a number.", status_code=303)
+        min_bid_str = minimum_bid.strip()
+
+    est_value_str = None
+    if estimated_value.strip():
+        if safe_float(estimated_value.strip()) is None:
+            return RedirectResponse("/manual-upload?error=Estimated value must be a number.", status_code=303)
+        est_value_str = estimated_value.strip()
+
+    # Scraped listings key off a real county account number; a manual
+    # submission has no such thing, so mint one -- it only needs to be
+    # unique enough not to collide with another manual entry, since the
+    # (county, account_number) uniqueness constraint is what upsert_listing
+    # relies on to know whether to insert or update.
+    account_number = f"MANUAL-{uuid.uuid4().hex[:10].upper()}"
+
+    geocoded = geocode_address(address)
+    latitude, longitude = geocoded if geocoded else (None, None)
+
+    conn = combined_db.get_connection()
+    combined_db.upsert_listing(
+        conn,
+        county=county,
+        account_number=account_number,
+        precinct=None,
+        minimum_bid=min_bid_str,
+        estimated_value=est_value_str,
+        address=address,
+        description=description.strip() or None,
+        status="User submitted",
+        source="manual",
+        source_url=source_url.strip() or None,
+        latitude=latitude,
+        longitude=longitude,
+    )
+    conn.close()
+
+    return RedirectResponse("/manual-upload?success=1", status_code=303)
 
 
 @app.get("/about", response_class=HTMLResponse)
