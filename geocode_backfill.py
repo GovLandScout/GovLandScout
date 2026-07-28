@@ -1,5 +1,5 @@
 """
-GovLandScout - Geocoding backfill (manual/occasional, NOT in the daily pipeline)
+GovLandScout - Geocoding backfill
 
 Fills in latitude/longitude for listings that have a usable address but no
 coordinates -- most notably all of Harris County (hctax_scraper.py never
@@ -10,9 +10,11 @@ hcad_value_backfill.py already pulls for estimated_value).
 
 Uses the Census Bureau's free, keyless batch geocoder -- a single POST
 with a CSV of up to 10,000 addresses, rather than one request per address.
-Deliberately kept out of run_daily_scrapers.py: geocoding a fixed street
-address doesn't change day to day, so there's nothing to re-run on a
-schedule -- just run this by hand after a scrape adds new addresses.
+Run as the last step of run_daily_scrapers.py, once, after every scraper
+that could have added a new address has already run -- geocoding a fixed
+street address doesn't change day to day, so there's nothing to gain from
+running it more than once per day. Can still be run by hand any time too
+(e.g. right after a manual scraper run outside the daily schedule).
 """
 
 import csv

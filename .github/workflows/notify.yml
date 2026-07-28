@@ -1,0 +1,30 @@
+name: Notification bell
+
+# Finalizes the site's notification bell state once a day, 1 hour after
+# scrape.yml's own schedule -- comfortably after even a slow scrape run
+# (20 min timeout there) has settled, so this always summarizes a complete
+# batch rather than one still in progress. See notify_bell.py.
+
+on:
+  schedule:
+    - cron: "0 13 * * *"  # 1 hour after scrape.yml's "0 12 * * *"
+  workflow_dispatch: {}
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Summarize latest scrape run
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: python notify_bell.py

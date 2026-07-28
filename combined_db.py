@@ -113,7 +113,75 @@ def init_db(conn: PgConnection):
         CREATE UNIQUE INDEX IF NOT EXISTS idx_county_account
         ON listings(county, account_number)
     """)
+
+    # One row per scraper per daily run (see run_daily_scrapers.py) --
+    # raw pass/fail log. notify_bell.py reads the most recent run_started_at
+    # batch of these to build the one-per-day summary the site's
+    # notification bell actually displays (see bell_notifications below);
+    # this table itself isn't read directly by web.py.
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS scrape_runs (
+            id SERIAL PRIMARY KEY,
+            run_started_at TEXT NOT NULL,
+            scraper TEXT NOT NULL,
+            status TEXT NOT NULL,
+            error TEXT
+        )
+    """)
+
+    # One row per day, written ~1 hour after the scrape by notify_bell.py
+    # (run as its own separate scheduled job) -- deliberately not just
+    # "whatever's freshest in scrape_runs whenever the bell happens to be
+    # viewed", so the bell shows a stable, once-a-day summary rather than
+    # a state that could flicker mid-run if someone loads the site while
+    # that day's scrape is still in progress.
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS bell_notifications (
+            id SERIAL PRIMARY KEY,
+            created_at TEXT NOT NULL,
+            error_count INTEGER NOT NULL,
+            summary TEXT NOT NULL
+        )
+    """)
     conn.commit()
+
+
+def record_scrape_result(
+    conn: PgConnection, run_started_at: str, scraper: str, status: str, error: str | None = None
+):
+    conn.execute(
+        "INSERT INTO scrape_runs (run_started_at, scraper, status, error) VALUES (?, ?, ?, ?)",
+        (run_started_at, scraper, status, error),
+    )
+    conn.commit()
+
+
+def fetch_latest_scrape_run(conn: PgConnection) -> list[tuple[str, str, str | None]]:
+    """(scraper, status, error) for every scraper in the most recent run batch."""
+    latest = conn.execute("SELECT MAX(run_started_at) FROM scrape_runs").fetchone()[0]
+    if latest is None:
+        return []
+    return conn.execute(
+        "SELECT scraper, status, error FROM scrape_runs WHERE run_started_at = ? ORDER BY scraper",
+        (latest,),
+    ).fetchall()
+
+
+def write_bell_notification(conn: PgConnection, error_count: int, summary: str):
+    now = datetime.now(timezone.utc).isoformat()
+    conn.execute(
+        "INSERT INTO bell_notifications (created_at, error_count, summary) VALUES (?, ?, ?)",
+        (now, error_count, summary),
+    )
+    conn.commit()
+
+
+def fetch_latest_bell_notification(conn: PgConnection) -> tuple[str, int, str] | None:
+    """(created_at, error_count, summary) for the most recent day's notification, or None if notify_bell.py hasn't run yet."""
+    row = conn.execute(
+        "SELECT created_at, error_count, summary FROM bell_notifications ORDER BY created_at DESC LIMIT 1"
+    ).fetchone()
+    return tuple(row) if row else None
 
 
 def upsert_listing(

@@ -182,6 +182,27 @@ h1 { font-size: 2rem; font-weight: 800; letter-spacing: -0.02em; margin: 0 0 0.4
 .site-nav a:hover { color: #0f172a; }
 .site-nav a.active { color: #2563eb; border-bottom-color: #2563eb; }
 
+.bell-wrap { position: relative; margin-left: auto; display: flex; align-items: center; }
+.bell-btn {
+  position: relative; background: none; border: none; cursor: pointer;
+  font-size: 1.15rem; padding: 0.5rem 0.6rem; line-height: 1; border-radius: 8px;
+}
+.bell-btn:hover { background: #f1f5f9; }
+.bell-badge {
+  position: absolute; top: 4px; right: 2px; width: 8px; height: 8px; border-radius: 999px;
+  background: #dc2626; display: none;
+}
+.bell-badge.show { display: block; }
+.bell-popover {
+  display: none; position: absolute; top: calc(100% + 6px); right: 0; z-index: 20;
+  background: #fff; border: 1px solid #e2e8f0; border-radius: 10px;
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.12); padding: 0.9rem 1rem;
+  width: 19rem; font-size: 0.85rem; color: #1e293b; line-height: 1.5;
+}
+.bell-popover.show { display: block; }
+.bell-popover .bell-summary { margin: 0 0 0.35rem; }
+.bell-popover .bell-time { color: #64748b; font-size: 0.75rem; }
+
 .table-scroll {
   border: 1px solid #e2e8f0; box-shadow: 0 1px 3px rgba(15, 23, 42, 0.06);
 }
@@ -210,6 +231,14 @@ tr:hover td { background: #eff6ff; }
   display: inline-block; padding: 3px 10px; border-radius: 999px;
   color: #fff; font-weight: 700; font-size: 0.8rem; white-space: nowrap;
 }
+
+.bookmark-btn {
+  background: none; border: none; cursor: pointer; font-size: 1.1rem;
+  padding: 2px 4px; line-height: 1; color: #cbd5e1;
+}
+.bookmark-btn:hover { color: #f59e0b; }
+.bookmark-btn.saved { color: #f59e0b; }
+.bookmark-btn-popup { font-size: 1rem; margin-left: 6px; vertical-align: middle; }
 
 .card {
   background: #fff; border: 1px solid #e2e8f0; border-radius: 12px;
@@ -344,7 +373,51 @@ def nav_html(active: str) -> str:
         f'<a href="{href}" class="{"active" if key == active else ""}">{label}</a>'
         for href, key, label in pages
     )
-    return f'<nav class="site-nav">{links}</nav>'
+    bell = """
+      <div class="bell-wrap">
+        <button id="bellBtn" class="bell-btn" title="Scraper status" aria-label="Scraper status" onclick="toggleBell()">
+          &#128276;<span id="bellBadge" class="bell-badge"></span>
+        </button>
+        <div id="bellPopover" class="bell-popover">
+          <p class="bell-summary" id="bellSummary">Loading...</p>
+          <p class="bell-time" id="bellTime"></p>
+        </div>
+      </div>
+    """
+    return f'<nav class="site-nav">{links}{bell}</nav>'
+
+
+# Plain (non-f-string) so JS's own {} don't need doubling -- inserted
+# verbatim into page_shell()'s f-string via {BELL_SCRIPT} below. Runs on
+# every page (not just home), so it's kept separate from the home page's
+# own <script> block, which only ever renders on "/".
+BELL_SCRIPT = """
+<script>
+  function toggleBell() {
+    document.getElementById('bellPopover').classList.toggle('show');
+  }
+  document.addEventListener('click', function (e) {
+    const wrap = document.querySelector('.bell-wrap');
+    if (wrap && !wrap.contains(e.target)) {
+      document.getElementById('bellPopover').classList.remove('show');
+    }
+  });
+  fetch('/api/bell').then(r => r.json()).then(data => {
+    const badge = document.getElementById('bellBadge');
+    const summary = document.getElementById('bellSummary');
+    const time = document.getElementById('bellTime');
+    if (!data) {
+      summary.textContent = 'No scrape status recorded yet.';
+      return;
+    }
+    summary.textContent = data.summary;
+    if (data.error_count > 0) badge.classList.add('show');
+    time.textContent = 'Updated ' + new Date(data.created_at).toLocaleString();
+  }).catch(() => {
+    document.getElementById('bellSummary').textContent = 'Could not load scraper status.';
+  });
+</script>
+"""
 
 
 def page_shell(title: str, active: str, body: str, extra_head: str = "") -> str:
@@ -361,6 +434,7 @@ def page_shell(title: str, active: str, body: str, extra_head: str = "") -> str:
     <body>
       {nav_html(active)}
       {body}
+      {BELL_SCRIPT}
     </body>
     </html>
     """
@@ -478,6 +552,14 @@ def deals_page():
         </div>
 
         <div class="control">
+          <label for="bookmarkedOnly">Bookmarks</label>
+          <label style="font-weight: 400; text-transform: none; letter-spacing: normal; display: flex; align-items: center; gap: 0.4rem; cursor: pointer;">
+            <input type="checkbox" id="bookmarkedOnly" onchange="applyFilters()">
+            <span id="bookmarkedOnlyLabel">Show only bookmarked (0)</span>
+          </label>
+        </div>
+
+        <div class="control">
           <button id="resetFilters" onclick="resetFilters()">Reset filters</button>
           <button id="toggleMap" onclick="toggleMap()">Hide map</button>
         </div>
@@ -493,7 +575,7 @@ def deals_page():
         <table id="dealsTable">
           <thead>
           <tr>
-            <th>County</th><th>Precinct</th><th>Account #</th><th>Min Bid</th>
+            <th>Save</th><th>County</th><th>Precinct</th><th>Account #</th><th>Min Bid</th>
             <th>Est. Value</th><th>Equity</th><th>Equity %</th><th>Address</th><th>Description</th><th>Links</th><th>Image</th>
           </tr>
           </thead>
@@ -536,6 +618,59 @@ def deals_page():
         const ALL_LISTINGS = JSON.parse(document.getElementById('listingsData').textContent);
         let filteredListings = [];
         let currentPage = 1;
+
+        // Bookmarks live only in this browser's localStorage -- no
+        // account/server involved, so "bookmark a listing" works the same
+        // for every visitor with zero backend changes. Keyed on
+        // county+account_number since that's already this project's
+        // stable per-listing identity (see combined_db.py's dedup key).
+        const BOOKMARKS_KEY = 'govlandscout_bookmarks';
+
+        function bookmarkKey(l) {{
+          return l.county + '|' + l.account_number;
+        }}
+
+        function loadBookmarks() {{
+          try {{
+            return new Set(JSON.parse(localStorage.getItem(BOOKMARKS_KEY) || '[]'));
+          }} catch (e) {{
+            return new Set();
+          }}
+        }}
+
+        function saveBookmarks(set) {{
+          localStorage.setItem(BOOKMARKS_KEY, JSON.stringify(Array.from(set)));
+        }}
+
+        let bookmarks = loadBookmarks();
+
+        function isBookmarked(l) {{
+          return bookmarks.has(bookmarkKey(l));
+        }}
+
+        function toggleBookmark(key) {{
+          if (bookmarks.has(key)) {{
+            bookmarks.delete(key);
+          }} else {{
+            bookmarks.add(key);
+          }}
+          saveBookmarks(bookmarks);
+          updateBookmarkLabel();
+          // Cheap to just recompute everything currently on screen rather
+          // than hunt down and patch the one star that changed -- same
+          // "re-deriving is cheap" tradeoff applySort() already makes.
+          if (document.getElementById('bookmarkedOnly').checked) {{
+            applyFilters();
+          }} else {{
+            renderCurrentPage();
+            updateMapMarkers();
+          }}
+        }}
+
+        function updateBookmarkLabel() {{
+          document.getElementById('bookmarkedOnlyLabel').textContent =
+            `Show only bookmarked (${{bookmarks.size}})`;
+        }}
 
         let map = null;
         let markerLayer = null;
@@ -634,7 +769,13 @@ def deals_page():
             ? `${{escapeHtml(l.county)}} <span class="manual-badge" title="Submitted by a site visitor, not from an official government source">User submitted</span>`
             : escapeHtml(l.county);
 
+          const bookmarkHtml = `<button class="bookmark-btn${{isBookmarked(l) ? ' saved' : ''}}" `
+            + `data-key="${{escapeHtml(bookmarkKey(l))}}" onclick="toggleBookmark(this.dataset.key)" `
+            + `title="${{isBookmarked(l) ? 'Remove bookmark' : 'Bookmark this listing'}}">`
+            + `${{isBookmarked(l) ? '★' : '☆'}}</button>`;
+
           return '<tr>'
+            + `<td>${{bookmarkHtml}}</td>`
             + `<td>${{countyHtml}}</td>`
             + `<td>${{l.precinct ? escapeHtml(l.precinct) : NO_DATA_HTML}}</td>`
             + `<td>${{escapeHtml(l.account_number)}}</td>`
@@ -664,6 +805,14 @@ def deals_page():
           const county = document.createElement('strong');
           county.textContent = l.county;
           div.appendChild(county);
+
+          const bookmarkBtn = document.createElement('button');
+          bookmarkBtn.className = 'bookmark-btn bookmark-btn-popup' + (isBookmarked(l) ? ' saved' : '');
+          bookmarkBtn.title = isBookmarked(l) ? 'Remove bookmark' : 'Bookmark this listing';
+          bookmarkBtn.textContent = isBookmarked(l) ? '★' : '☆';
+          bookmarkBtn.onclick = () => toggleBookmark(bookmarkKey(l));
+          div.appendChild(bookmarkBtn);
+
           if (l.is_manual) {{
             const badge = document.createElement('span');
             badge.className = 'manual-badge';
@@ -798,6 +947,7 @@ def deals_page():
           const valueFilterActive = minValue > VALUE_MIN || maxValue < VALUE_MAX;
           const activeMissingFilters = Array.from(document.querySelectorAll('.missingFilter:checked'))
             .map(cb => MISSING_DATA_TESTS[cb.dataset.field]);
+          const bookmarkedOnly = document.getElementById('bookmarkedOnly').checked;
 
           filteredListings = ALL_LISTINGS.filter(l => {{
             if (locationQuery && !l.search_text.includes(locationQuery)) return false;
@@ -806,6 +956,7 @@ def deals_page():
               if (l.estimated_value < minValue || l.estimated_value > maxValue) return false;
             }}
             if (activeMissingFilters.some(isMissing => isMissing(l))) return false;
+            if (bookmarkedOnly && !isBookmarked(l)) return false;
             return true;
           }});
 
@@ -829,9 +980,11 @@ def deals_page():
           document.getElementById('maxValue').value = VALUE_MAX;
           document.getElementById('equitySort').value = 'desc';
           document.querySelectorAll('.missingFilter').forEach(cb => {{ cb.checked = false; }});
+          document.getElementById('bookmarkedOnly').checked = false;  // clears the filter, not the saved bookmarks themselves
           applyFilters();
         }}
 
+        updateBookmarkLabel();
         initMap();
         applyFilters();
       </script>
@@ -1188,3 +1341,14 @@ def about_page():
 @app.get("/api/deals")
 def deals_api():
     return get_all_listings()
+
+
+@app.get("/api/bell")
+def bell_api():
+    conn = combined_db.get_connection()
+    notification = combined_db.fetch_latest_bell_notification(conn)
+    conn.close()
+    if notification is None:
+        return None
+    created_at, error_count, summary = notification
+    return {"created_at": created_at, "error_count": error_count, "summary": summary}
