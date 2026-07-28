@@ -185,9 +185,11 @@ h1 { font-size: 2rem; font-weight: 800; letter-spacing: -0.02em; margin: 0 0 0.4
 .bell-wrap { position: relative; margin-left: auto; display: flex; align-items: center; }
 .bell-btn {
   position: relative; background: none; border: none; cursor: pointer;
-  font-size: 1.15rem; padding: 0.5rem 0.6rem; line-height: 1; border-radius: 8px;
+  padding: 0.5rem 0.6rem; line-height: 1; border-radius: 8px;
+  display: inline-flex; align-items: center;
 }
 .bell-btn:hover { background: #f1f5f9; }
+.bell-btn svg { width: 1.15rem; height: 1.15rem; fill: none; stroke: #334155; stroke-width: 1.8; }
 .bell-badge {
   position: absolute; top: 4px; right: 2px; width: 8px; height: 8px; border-radius: 999px;
   background: #dc2626; display: none;
@@ -375,8 +377,12 @@ def nav_html(active: str) -> str:
     )
     bell = """
       <div class="bell-wrap">
-        <button id="bellBtn" class="bell-btn" title="Scraper status" aria-label="Scraper status" onclick="toggleBell()">
-          &#128276;<span id="bellBadge" class="bell-badge"></span>
+        <button id="bellBtn" class="bell-btn" title="Site status" aria-label="Site status" onclick="toggleBell()">
+          <svg viewBox="0 0 24 24" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9" />
+            <path d="M13.73 21a2 2 0 0 1-3.46 0" />
+          </svg>
+          <span id="bellBadge" class="bell-badge"></span>
         </button>
         <div id="bellPopover" class="bell-popover">
           <p class="bell-summary" id="bellSummary">Loading...</p>
