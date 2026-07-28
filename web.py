@@ -236,6 +236,15 @@ tr:hover td { background: #eff6ff; }
 .range-control .range-row { display: flex; align-items: center; gap: 0.5rem; }
 .range-control input[type="range"] { flex: 1; accent-color: #2563eb; }
 .range-value { font-size: 0.8rem; color: #475569; white-space: nowrap; min-width: 5.5rem; }
+.checkbox-filters { min-width: 260px; }
+.checkbox-grid {
+  display: grid; grid-template-columns: repeat(2, auto); gap: 0.3rem 1rem;
+}
+.checkbox-grid label {
+  display: flex; align-items: center; gap: 0.4rem; font-size: 0.85rem;
+  font-weight: 400; text-transform: none; letter-spacing: normal; color: #1e293b; cursor: pointer;
+}
+.checkbox-grid input[type="checkbox"] { accent-color: #2563eb; cursor: pointer; }
 #resetFilters, #toggleMap {
   padding: 0.55rem 1.1rem; font-size: 0.85rem; font-weight: 600; border-radius: 8px;
   cursor: pointer; margin-right: 0.5rem; border: 1px solid transparent;
@@ -260,6 +269,10 @@ tr:hover td { background: #eff6ff; }
 .pagination button:hover:not(:disabled) { background: #f1f5f9; }
 .pagination button:disabled { opacity: 0.4; cursor: default; }
 #pageIndicator { font-size: 0.85rem; color: #475569; min-width: 8rem; text-align: center; }
+#pageSelect {
+  padding: 0.45rem 0.7rem; font-size: 0.85rem; border: 1px solid #cbd5e1; border-radius: 8px;
+  background: #fff; color: #334155;
+}
 
 .stats-grid {
   display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
@@ -452,6 +465,18 @@ def deals_page():
           </select>
         </div>
 
+        <div class="control checkbox-filters">
+          <label>Hide listings missing</label>
+          <div class="checkbox-grid">
+            <label><input type="checkbox" class="missingFilter" data-field="address" onchange="applyFilters()"> Address</label>
+            <label><input type="checkbox" class="missingFilter" data-field="estimated_value" onchange="applyFilters()"> Est. value</label>
+            <label><input type="checkbox" class="missingFilter" data-field="equity" onchange="applyFilters()"> Equity</label>
+            <label><input type="checkbox" class="missingFilter" data-field="minimum_bid" onchange="applyFilters()"> Min bid</label>
+            <label><input type="checkbox" class="missingFilter" data-field="image" onchange="applyFilters()"> Image</label>
+            <label><input type="checkbox" class="missingFilter" data-field="links" onchange="applyFilters()"> Map/listing link</label>
+          </div>
+        </div>
+
         <div class="control">
           <button id="resetFilters" onclick="resetFilters()">Reset filters</button>
           <button id="toggleMap" onclick="toggleMap()">Hide map</button>
@@ -479,6 +504,7 @@ def deals_page():
       <div class="pagination">
         <button id="prevPage" onclick="changePage(-1)">&larr; Prev</button>
         <span id="pageIndicator"></span>
+        <select id="pageSelect" onchange="goToPage()" aria-label="Jump to page"></select>
         <button id="nextPage" onclick="changePage(1)">Next &rarr;</button>
       </div>
 
@@ -493,6 +519,19 @@ def deals_page():
         const VALUE_MAX = {value_max};
         const PAGE_SIZE = 100;
         const NO_DATA_HTML = '<span class="nodata">No data available</span>';
+
+        // Keyed by the checkbox's data-field so applyFilters() can look
+        // up each checked box's test generically instead of a long
+        // if-chain. "links" covers either the source listing or the map
+        // link -- a row missing just one of the two still has a usable link.
+        const MISSING_DATA_TESTS = {{
+          address: l => !l.address,
+          estimated_value: l => l.estimated_value == null,
+          equity: l => l.equity_pct == null,
+          minimum_bid: l => l.minimum_bid == null,
+          image: l => !l.image_url,
+          links: l => !l.source_url && !l.maps_url,
+        }};
 
         const ALL_LISTINGS = JSON.parse(document.getElementById('listingsData').textContent);
         let filteredListings = [];
@@ -699,6 +738,31 @@ def deals_page():
             filteredListings.length ? `Page ${{currentPage}} of ${{totalPages}}` : 'No results';
           document.getElementById('prevPage').disabled = currentPage <= 1;
           document.getElementById('nextPage').disabled = currentPage >= totalPages;
+          updatePageSelect(totalPages);
+        }}
+
+        function updatePageSelect(totalPages) {{
+          const select = document.getElementById('pageSelect');
+          // Only rebuild the option list when the page count actually
+          // changed (e.g. a filter changed how many pages there are) --
+          // rebuilding on every render would reset the dropdown's own
+          // open/scroll state for no reason.
+          if (select.options.length !== totalPages) {{
+            select.innerHTML = '';
+            for (let i = 1; i <= totalPages; i++) {{
+              const opt = document.createElement('option');
+              opt.value = i;
+              opt.textContent = `Page ${{i}}`;
+              select.appendChild(opt);
+            }}
+          }}
+          select.value = currentPage;
+        }}
+
+        function goToPage() {{
+          currentPage = parseInt(document.getElementById('pageSelect').value, 10);
+          renderCurrentPage();
+          document.getElementById('dealsTable').scrollIntoView({{ behavior: 'smooth', block: 'start' }});
         }}
 
         function changePage(delta) {{
@@ -732,6 +796,8 @@ def deals_page():
           document.getElementById('maxValueLabel').textContent = formatMoney(maxValue);
 
           const valueFilterActive = minValue > VALUE_MIN || maxValue < VALUE_MAX;
+          const activeMissingFilters = Array.from(document.querySelectorAll('.missingFilter:checked'))
+            .map(cb => MISSING_DATA_TESTS[cb.dataset.field]);
 
           filteredListings = ALL_LISTINGS.filter(l => {{
             if (locationQuery && !l.search_text.includes(locationQuery)) return false;
@@ -739,6 +805,7 @@ def deals_page():
               if (l.estimated_value == null) return false;  // can't evaluate against an active range
               if (l.estimated_value < minValue || l.estimated_value > maxValue) return false;
             }}
+            if (activeMissingFilters.some(isMissing => isMissing(l))) return false;
             return true;
           }});
 
@@ -761,6 +828,7 @@ def deals_page():
           document.getElementById('minValue').value = VALUE_MIN;
           document.getElementById('maxValue').value = VALUE_MAX;
           document.getElementById('equitySort').value = 'desc';
+          document.querySelectorAll('.missingFilter').forEach(cb => {{ cb.checked = false; }});
           applyFilters();
         }}
 
