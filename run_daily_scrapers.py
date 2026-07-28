@@ -18,6 +18,7 @@ SCRAPERS = [
     # so this alone adds ~90s to every run (9 documents)
     "glo_veterans_land_scraper.py", "hud_reo_scraper.py", "publicsurplus_scraper.py",
     "houston_landbank_scraper.py", "irs_auction_scraper.py",
+    "realauction_scraper.py",
 ]
 
 
