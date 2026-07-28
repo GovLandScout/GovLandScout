@@ -22,6 +22,7 @@ Two exclusions:
 """
 
 import sqlite3
+import time
 from datetime import datetime, timezone
 
 import requests
@@ -32,10 +33,38 @@ API_URL = "https://taxsales.lgbs.com/api/property_sales/"
 DB_PATH = "lgbs_tax_sales.db"
 PAGE_SIZE = 200
 EXCLUDED_COUNTIES = {"HARRIS COUNTY"}
+PAGE_RETRIES = 3
+PAGE_RETRY_BACKOFF_SECONDS = 5  # doubles each retry: 5s, 10s, 20s
+INTER_PAGE_DELAY_SECONDS = 1  # ~19 back-to-back pages with no pause between them
+# started reliably timing out server-side a few days into this project
+# (2026-07-24 on) a few pages further in each day -- looks like the
+# request rate itself started tripping something on LGBS's end.
 
 HEADERS = {
     "User-Agent": "GovLandScout-SchoolProject/1.0 (contact: your-email@example.com)"
 }
+
+
+def fetch_page(url: str, params: dict | None) -> dict:
+    """
+    One page, retried with backoff on transient connection/timeout errors --
+    without this, a single flaky request anywhere in ~19 sequential pages
+    kills the whole run and this scraper doesn't update at all that day
+    (exactly what started happening daily once LGBS's connection started
+    timing out partway through pagination).
+    """
+    last_error = None
+    for attempt in range(PAGE_RETRIES):
+        if attempt > 0:
+            time.sleep(PAGE_RETRY_BACKOFF_SECONDS * (2 ** (attempt - 1)))
+        try:
+            resp = requests.get(url, params=params, headers=HEADERS, timeout=30)
+            resp.raise_for_status()
+            return resp.json()
+        except requests.RequestException as e:
+            last_error = e
+            print(f"  page fetch failed (attempt {attempt + 1}/{PAGE_RETRIES}): {e}")
+    raise last_error
 
 
 def fetch_all_listings() -> list[dict]:
@@ -50,9 +79,9 @@ def fetch_all_listings() -> list[dict]:
     params = {"limit": PAGE_SIZE, "ordering": "uid"}
 
     while url:
-        resp = requests.get(url, params=params, headers=HEADERS, timeout=30)
-        resp.raise_for_status()
-        data = resp.json()
+        if listings:  # no delay before the very first page
+            time.sleep(INTER_PAGE_DELAY_SECONDS)
+        data = fetch_page(url, params)
 
         listings.extend(data["results"])
         url = data.get("next")
