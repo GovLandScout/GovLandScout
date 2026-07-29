@@ -36,7 +36,26 @@ SCRAPERS = [
 ERROR_SNIPPET_CHARS = 500
 
 
-def run_step(conn: combined_db.PgConnection, project_dir: Path, run_started_at: str, script: str):
+def record_result(run_started_at: str, script: str, status: str, error: str | None = None):
+    """
+    A fresh, short-lived connection per call rather than one held open for
+    the whole run -- a long-running scraper earlier in the loop (LGBS
+    retrying through several timeouts, say) can leave a shared connection
+    idle long enough for Neon to drop it, and this call happens right after
+    every single scraper. Also never allowed to take the run down: this is
+    bookkeeping for the notification bell, not the actual scrape, and a
+    single failed status write (2026-07-28's crash -- see git log) must not
+    cost every scraper still left in the loop their chance to run.
+    """
+    try:
+        conn = combined_db.get_connection()
+        combined_db.record_scrape_result(conn, run_started_at, script, status, error)
+        conn.close()
+    except Exception as e:
+        print(f"  (couldn't record {script}'s result to scrape_runs: {e})")
+
+
+def run_step(project_dir: Path, run_started_at: str, script: str):
     print(f"--- Running {script} ---")
     result = subprocess.run(
         [sys.executable, script], cwd=project_dir,
@@ -46,28 +65,24 @@ def run_step(conn: combined_db.PgConnection, project_dir: Path, run_started_at: 
     print(result.stderr, end="", file=sys.stderr)
 
     if result.returncode == 0:
-        combined_db.record_scrape_result(conn, run_started_at, script, "success")
+        record_result(run_started_at, script, "success")
     else:
         print(f"--- {script} failed with exit code {result.returncode} ---")
         error = result.stderr.strip()[-ERROR_SNIPPET_CHARS:] or f"exit code {result.returncode}"
-        combined_db.record_scrape_result(conn, run_started_at, script, "failed", error)
+        record_result(run_started_at, script, "failed", error)
 
 
 def main():
     project_dir = Path(__file__).resolve().parent
     run_started_at = datetime.now(timezone.utc).isoformat()
 
-    conn = combined_db.get_connection()
-
     for scraper in SCRAPERS:
-        run_step(conn, project_dir, run_started_at, scraper)
+        run_step(project_dir, run_started_at, scraper)
 
     # Runs last, once, against whatever addresses today's scrapers just
     # added -- not its own scraper, so it isn't in SCRAPERS above, but it's
     # tracked the same way so a broken geocoder shows up on the bell too.
-    run_step(conn, project_dir, run_started_at, "geocode_backfill.py")
-
-    conn.close()
+    run_step(project_dir, run_started_at, "geocode_backfill.py")
 
 
 if __name__ == "__main__":
