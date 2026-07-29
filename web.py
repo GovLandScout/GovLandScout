@@ -1008,6 +1008,7 @@ SOURCE_LABELS = {
     "houstontx.gov": "City of Houston Real Property",
     "publicsurplus.com": "PublicSurplus (Texas government sellers)",
     "realauction.com": "RealAuction/RealForeclose (Sheriff & Constable sales)",
+    "guadalupetx.gov": "Guadalupe County (self-published)",
     "manual": "User-submitted (unverified)",
 }
 
