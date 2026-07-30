@@ -15,10 +15,17 @@ maybe half the tracts, since this is often raw/rural land that was
 never assigned a formal address -- so this deliberately leaves
 latitude/longitude unset and lets geocode_backfill.py pick up whichever
 addresses did come through, same as every other address-only source.
+
+fetch() retries with backoff, and a single tract's detail page failing
+even after that is skipped rather than allowed to crash the run -- before
+this, one bad detail-page fetch (out of ~25, one request each) took the
+whole script down with it, losing every tract from that point on, not
+just the one that failed (2026-07-30).
 """
 
 import re
 import sqlite3
+import time
 from datetime import datetime, timezone
 
 import requests
@@ -29,6 +36,12 @@ import combined_db
 LIST_URL = "https://www.glo.texas.gov/veterans/land-sale/public"
 DETAIL_URL = "https://www.glo.texas.gov/veterans/land-sale/public/tract/{tract}"
 DB_PATH = "glo_veterans_land.db"
+FETCH_RETRIES = 4
+RETRY_BACKOFF_SECONDS = 5  # doubles each retry: 5s, 10s, 20s, 40s
+# One tract's detail page timing out (glo.texas.gov, 2026-07-30) used to
+# take the whole script down with it -- fetch() had no retry, and main()'s
+# per-tract loop had no try/except, so an unhandled exception on tract N
+# lost every tract from N onward too, not just that one.
 
 HEADERS = {
     "User-Agent": "GovLandScout-SchoolProject/1.0 (contact: your-email@example.com)"
@@ -44,9 +57,46 @@ GPS_PATTERN = re.compile(r"GPS Coordinates?:\s*(-?\d+\.\d+)Â°?,?\s*(-?\d+\.\d+)Â
 
 
 def fetch(url: str) -> str:
-    resp = requests.get(url, headers=HEADERS, timeout=30)
-    resp.raise_for_status()
-    return resp.text
+    last_error = None
+    for attempt in range(FETCH_RETRIES):
+        if attempt > 0:
+            time.sleep(RETRY_BACKOFF_SECONDS * (2 ** (attempt - 1)))
+        try:
+            resp = requests.get(url, headers=HEADERS, timeout=30)
+            resp.raise_for_status()
+            return resp.text
+        except requests.RequestException as e:
+            last_error = e
+            print(f"  fetch failed (attempt {attempt + 1}/{FETCH_RETRIES}): {e}")
+    raise last_error
+
+
+GLO_ERROR_MARKER = "Unable to retrieve search results"
+
+
+def fetch_list_page() -> str:
+    """
+    The list page's tract table is populated by a third-party search
+    widget (Cludo) that can fail server-side on GLO's own end -- when it
+    does, the page still comes back 200 OK, just with "Unable to retrieve
+    search results" where the table should be. fetch()'s retry only
+    covers HTTP-level failures (timeouts, 5xx, ...) and wouldn't catch
+    this at all, so it's checked for separately here. First seen
+    2026-07-30, a few hours after this same page loaded 25 tracts fine.
+    """
+    last_html = None
+    for attempt in range(FETCH_RETRIES):
+        if attempt > 0:
+            time.sleep(RETRY_BACKOFF_SECONDS * (2 ** (attempt - 1)))
+        html = fetch(LIST_URL)
+        if GLO_ERROR_MARKER not in html:
+            return html
+        last_html = html
+        print(f'  GLO\'s own site returned "{GLO_ERROR_MARKER}" (attempt {attempt + 1}/{FETCH_RETRIES})')
+    raise RuntimeError(
+        f'GLO\'s site kept returning "{GLO_ERROR_MARKER}" after {FETCH_RETRIES} attempts -- '
+        "their search backend looks down, not a bug on this end"
+    )
 
 
 def parse_tract_list(html: str) -> list[dict]:
@@ -149,7 +199,7 @@ def upsert_listing(conn: sqlite3.Connection, tract: dict):
 
 def main():
     print(f"Fetching {LIST_URL} ...")
-    tracts = parse_tract_list(fetch(LIST_URL))
+    tracts = parse_tract_list(fetch_list_page())
     print(f"Found {len(tracts)} tract(s) for sale.")
 
     conn = sqlite3.connect(DB_PATH)
@@ -158,9 +208,18 @@ def main():
 
     addressed_count = 0
     geocoded_count = 0
+    skipped_count = 0
     for tract in tracts:
         detail_url = DETAIL_URL.format(tract=tract["tract_number"])
-        detail = parse_tract_detail(fetch(detail_url))
+        try:
+            detail = parse_tract_detail(fetch(detail_url))
+        except requests.RequestException as e:
+            # One tract's detail page failing shouldn't cost the other 24
+            # their update too -- this tract just keeps whatever it had
+            # from the last successful run instead of getting refreshed.
+            print(f"  giving up on tract {tract['tract_number']} after {FETCH_RETRIES} attempts ({e}) -- skipping it")
+            skipped_count += 1
+            continue
         tract["address"] = detail["address"]
         tract["description"] = f"{tract['acreage']} -- {detail['description']}"
         if tract["address"]:
@@ -187,9 +246,11 @@ def main():
         )
 
     combined_conn.close()
+    stored_count = len(tracts) - skipped_count
+    skip_note = f", {skipped_count} skipped (detail page never loaded)" if skipped_count else ""
     print(
-        f"Stored {len(tracts)} listings into {DB_PATH} "
-        f"({addressed_count} with a street address, {geocoded_count} with GPS coordinates)."
+        f"Stored {stored_count} listings into {DB_PATH} "
+        f"({addressed_count} with a street address, {geocoded_count} with GPS coordinates{skip_note})."
     )
     conn.close()
 
