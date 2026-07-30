@@ -41,6 +41,16 @@ INTER_PAGE_DELAY_SECONDS = 2  # ~19 back-to-back pages with no pause between the
 # one day, page 8 another) -- looks like plain connection flakiness on
 # LGBS's end rather than a request-count-triggered rate limit, so more
 # patience per page matters more here than a longer gap between them.
+MAX_FETCH_SECONDS = 480  # 8 min, out of the daily pipeline's 20 min total budget
+# On 2026-07-30 nearly every page needed retries (not just one) -- worse
+# than the flakiness this was tuned for, and possibly IP-specific: this
+# exact code run from a non-GitHub-Actions machine minutes earlier hit
+# zero failures. Whatever the cause, retrying through dozens of bad pages
+# at up to ~75s each (4 attempts, backoff up to 40s) can add up to more
+# time than the whole job has -- this run got force-cancelled by the job
+# timeout before any scraper after LGBS ever started. A hard cap here
+# means LGBS degrades to "however many pages fit in 8 minutes" instead of
+# being able to starve the other 12+ scrapers of their turn entirely.
 
 HEADERS = {
     "User-Agent": "GovLandScout-SchoolProject/1.0 (contact: your-email@example.com)"
@@ -84,6 +94,7 @@ def fetch_all_listings() -> list[dict]:
     order can shift rows between pages mid-scrape, silently skipping or
     duplicating listings. `uid` alone is sufficient since it's unique.
     """
+    start_time = time.monotonic()
     first_page = fetch_page(API_URL, {"limit": PAGE_SIZE, "ordering": "uid"})
     if first_page is None:
         return []  # can't even get the first page (and its total count) -- nothing to page through
@@ -94,6 +105,13 @@ def fetch_all_listings() -> list[dict]:
     skipped_pages = 0
 
     for page_num in range(1, total_pages):
+        if time.monotonic() - start_time > MAX_FETCH_SECONDS:
+            remaining = total_pages - page_num
+            print(f"  hit the {MAX_FETCH_SECONDS}s fetch time budget with {remaining} page(s) left -- "
+                  f"stopping here so the rest of the pipeline still gets to run")
+            skipped_pages += remaining
+            break
+
         time.sleep(INTER_PAGE_DELAY_SECONDS)
         offset = page_num * PAGE_SIZE
         page = fetch_page(API_URL, {"limit": PAGE_SIZE, "ordering": "uid", "offset": offset})
@@ -249,7 +267,9 @@ def main():
             source_url=f"https://taxsales.lgbs.com/detail/{listing['uid']}",
             latitude=latitude,
             longitude=longitude,
+            commit=False,  # one round-trip for the whole batch instead of one per row -- see upsert_listing's docstring
         )
+    combined_conn.commit()
 
     combined_conn.close()
 

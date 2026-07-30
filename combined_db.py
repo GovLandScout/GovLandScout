@@ -198,8 +198,22 @@ def upsert_listing(
     source_url: str | None = None,
     latitude: float | None = None,
     longitude: float | None = None,
+    commit: bool = True,
 ):
-    """Keyed on (county, account_number) -- account numbers aren't unique across counties."""
+    """
+    Keyed on (county, account_number) -- account numbers aren't unique
+    across counties.
+
+    commit=False lets a caller writing many rows in one loop (lgbs_scraper.py
+    inserting 3,000-6,000+ listings a run, say) batch them into one commit
+    at the end instead of one network round-trip per row -- on 2026-07-29
+    that per-row commit pattern was very likely what pushed an already-slow
+    run (LGBS's API retrying through connection timeouts) over the daily
+    job's 20-minute timeout, since the log showed LGBS's fetch finishing
+    but the job dying before the *next* scraper ever started -- i.e. stuck
+    writing, not fetching. Every other caller keeps the default (commit
+    immediately, matching the behavior this always had).
+    """
     if not account_number:
         return  # can't track/dedupe a listing without a stable identifier
 
@@ -230,7 +244,8 @@ def upsert_listing(
             longitude, now, now,
         ),
     )
-    conn.commit()
+    if commit:
+        conn.commit()
 
 
 def update_estimated_value(
