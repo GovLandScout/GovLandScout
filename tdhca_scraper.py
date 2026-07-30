@@ -17,6 +17,7 @@ that price, but estimated_value is intentionally left unset.
 import re
 import ssl
 import sqlite3
+import time
 from datetime import datetime, timezone
 
 import requests
@@ -28,6 +29,11 @@ import combined_db
 URL = "https://public.tdhca.state.tx.us/pub/T_HF_CLEARINGHOUSE.list_for_sale"
 DETAIL_URL = "https://public.tdhca.state.tx.us/pub/T_HF_CLEARINGHOUSE.display_property"
 DB_PATH = "tdhca_properties.db"
+FETCH_RETRIES = 4
+RETRY_BACKOFF_SECONDS = 5  # doubles each retry: 5s, 10s, 20s, 40s
+# Failed once with "Connection refused" on 2026-07-29 -- confirmed transient
+# (the server was reachable again minutes later), but there was no retry
+# at all before this, so that one blip was enough to fail the whole run.
 
 HEADERS = {
     "User-Agent": "GovLandScout-SchoolProject/1.0 (contact: your-email@example.com)"
@@ -52,9 +58,19 @@ class LegacySSLAdapter(HTTPAdapter):
 def fetch_page_html() -> str:
     session = requests.Session()
     session.mount("https://", LegacySSLAdapter())
-    resp = session.get(URL, headers=HEADERS, timeout=30)
-    resp.raise_for_status()
-    return resp.text
+
+    last_error = None
+    for attempt in range(FETCH_RETRIES):
+        if attempt > 0:
+            time.sleep(RETRY_BACKOFF_SECONDS * (2 ** (attempt - 1)))
+        try:
+            resp = session.get(URL, headers=HEADERS, timeout=30)
+            resp.raise_for_status()
+            return resp.text
+        except requests.RequestException as e:
+            last_error = e
+            print(f"  fetch failed (attempt {attempt + 1}/{FETCH_RETRIES}): {e}")
+    raise last_error
 
 
 def parse_listings(html: str) -> list[dict]:

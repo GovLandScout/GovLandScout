@@ -33,25 +33,25 @@ API_URL = "https://taxsales.lgbs.com/api/property_sales/"
 DB_PATH = "lgbs_tax_sales.db"
 PAGE_SIZE = 200
 EXCLUDED_COUNTIES = {"HARRIS COUNTY"}
-PAGE_RETRIES = 3
-PAGE_RETRY_BACKOFF_SECONDS = 5  # doubles each retry: 5s, 10s, 20s
-INTER_PAGE_DELAY_SECONDS = 1  # ~19 back-to-back pages with no pause between them
+PAGE_RETRIES = 4
+PAGE_RETRY_BACKOFF_SECONDS = 5  # doubles each retry: 5s, 10s, 20s, 40s
+INTER_PAGE_DELAY_SECONDS = 2  # ~19 back-to-back pages with no pause between them
 # started reliably timing out server-side a few days into this project
-# (2026-07-24 on) a few pages further in each day -- looks like the
-# request rate itself started tripping something on LGBS's end.
+# (2026-07-24 on), at a different, seemingly random page each day (page 4
+# one day, page 8 another) -- looks like plain connection flakiness on
+# LGBS's end rather than a request-count-triggered rate limit, so more
+# patience per page matters more here than a longer gap between them.
 
 HEADERS = {
     "User-Agent": "GovLandScout-SchoolProject/1.0 (contact: your-email@example.com)"
 }
 
 
-def fetch_page(url: str, params: dict | None) -> dict:
+def fetch_page(url: str, params: dict | None) -> dict | None:
     """
-    One page, retried with backoff on transient connection/timeout errors --
-    without this, a single flaky request anywhere in ~19 sequential pages
-    kills the whole run and this scraper doesn't update at all that day
-    (exactly what started happening daily once LGBS's connection started
-    timing out partway through pagination).
+    One page, retried with backoff on transient connection/timeout errors.
+    Returns None (rather than raising) once retries are exhausted -- the
+    caller treats that as "skip this page", not "abort the whole scrape".
     """
     last_error = None
     for attempt in range(PAGE_RETRIES):
@@ -64,28 +64,46 @@ def fetch_page(url: str, params: dict | None) -> dict:
         except requests.RequestException as e:
             last_error = e
             print(f"  page fetch failed (attempt {attempt + 1}/{PAGE_RETRIES}): {e}")
-    raise last_error
+    print(f"  giving up on this page after {PAGE_RETRIES} attempts ({last_error}) -- skipping it")
+    return None
 
 
 def fetch_all_listings() -> list[dict]:
     """
-    `ordering` is required, not optional -- without an explicit stable sort,
-    limit/offset pagination over a dataset with ties in the default order
-    can shift rows between pages mid-scrape, silently skipping or
+    Pages by an explicitly constructed offset rather than chaining the
+    API's own `next` link. Chaining meant one page failing after retries
+    had no choice but to abort the entire fetch -- there was no way to
+    know page N+1's URL without page N's response providing it, so a
+    single bad page (out of ~19) was throwing away every listing already
+    fetched from the pages before it, and everything after it too. That's
+    exactly what happened on 2026-07-29: 3 successful pages' worth of data
+    discarded because page 4 timed out.
+
+    `ordering` is required, not optional -- without an explicit stable
+    sort, limit/offset pagination over a dataset with ties in the default
+    order can shift rows between pages mid-scrape, silently skipping or
     duplicating listings. `uid` alone is sufficient since it's unique.
     """
-    listings = []
-    url = API_URL
-    params = {"limit": PAGE_SIZE, "ordering": "uid"}
+    first_page = fetch_page(API_URL, {"limit": PAGE_SIZE, "ordering": "uid"})
+    if first_page is None:
+        return []  # can't even get the first page (and its total count) -- nothing to page through
 
-    while url:
-        if listings:  # no delay before the very first page
-            time.sleep(INTER_PAGE_DELAY_SECONDS)
-        data = fetch_page(url, params)
+    listings = list(first_page["results"])
+    total_count = first_page["count"]
+    total_pages = -(-total_count // PAGE_SIZE)  # ceiling division
+    skipped_pages = 0
 
-        listings.extend(data["results"])
-        url = data.get("next")
-        params = None  # `next` already includes all query params
+    for page_num in range(1, total_pages):
+        time.sleep(INTER_PAGE_DELAY_SECONDS)
+        offset = page_num * PAGE_SIZE
+        page = fetch_page(API_URL, {"limit": PAGE_SIZE, "ordering": "uid", "offset": offset})
+        if page is None:
+            skipped_pages += 1
+            continue
+        listings.extend(page["results"])
+
+    if skipped_pages:
+        print(f"  {skipped_pages} of {total_pages} page(s) never came through -- proceeding with the rest")
 
     return listings
 
