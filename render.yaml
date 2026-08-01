@@ -2,11 +2,21 @@ services:
   - type: web
     name: govlandscout
     env: python
-    plan: free
+    plan: starter
     buildCommand: pip install -r requirements.txt
     startCommand: "uvicorn web:app --host 0.0.0.0 --port $PORT"
     envVars:
       - key: PYTHON_VERSION
         value: 3.13.1
       - key: DATABASE_URL
+        sync: false
+      # Cloudflare Turnstile keys for the manual-upload form's CAPTCHA
+      # (see web.py's TURNSTILE_SITE_KEY/TURNSTILE_SECRET_KEY). Create a
+      # Turnstile widget at dash.cloudflare.com -> Turnstile to get both.
+      # Left unset, the form still works -- the widget just doesn't render
+      # and server-side verification is skipped -- so this can be added
+      # after deploy without breaking anything in the meantime.
+      - key: TURNSTILE_SITE_KEY
+        sync: false
+      - key: TURNSTILE_SECRET_KEY
         sync: false

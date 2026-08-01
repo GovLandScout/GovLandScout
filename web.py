@@ -21,18 +21,31 @@ Run with: venv/bin/uvicorn web:app --reload
 
 import json
 import math
+import os
+import time
 import uuid
 from html import escape
 from pathlib import Path
 
 import requests
-from fastapi import FastAPI, Form, HTTPException
+from fastapi import FastAPI, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 
 import combined_db
 from find_deals import fetch_all_listings, safe_float
 
 app = FastAPI(title="GovLandScout")
+
+# Cloudflare Turnstile -- chosen over reCAPTCHA/hCaptcha specifically
+# because Cloudflare's already sitting in front of this site (see
+# CF-Connecting-IP use below), so this needs no new third-party relationship,
+# and it's cookie-free/doesn't track visitors the way reCAPTCHA does. Unset
+# in an environment with no keys configured (e.g. local dev) -- the widget
+# just doesn't render and verification is skipped, rather than breaking the
+# form for anyone testing without Cloudflare credentials on hand.
+TURNSTILE_SITE_KEY = os.environ.get("TURNSTILE_SITE_KEY")
+TURNSTILE_SECRET_KEY = os.environ.get("TURNSTILE_SECRET_KEY")
+TURNSTILE_VERIFY_URL = "https://challenges.cloudflare.com/turnstile/v0/siteverify"
 
 # Esri's satellite export explicitly disallows caching
 # (Cache-Control: max-age=0, must-revalidate on their responses), so every
@@ -140,6 +153,68 @@ def geocode_address(address: str) -> tuple[float, float] | None:
         return coords["y"], coords["x"]  # (lat, lon)
     except (requests.RequestException, KeyError, IndexError, ValueError):
         return None
+
+
+def client_ip(request: Request) -> str:
+    """
+    Cloudflare sits in front of this site (see satellite_thumbnail_url's
+    neighbor routes, or just check any response's `server` header) and
+    sets CF-Connecting-IP to the real visitor IP itself -- more trustworthy
+    than X-Forwarded-For, which a client could in principle set on a
+    direct request that bypassed Cloudflare. Falls back to X-Forwarded-For
+    (Render's own proxy sets this) and finally the raw socket address for
+    local dev, where neither header exists.
+    """
+    cf_ip = request.headers.get("CF-Connecting-IP")
+    if cf_ip:
+        return cf_ip
+    forwarded = request.headers.get("X-Forwarded-For")
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    return request.client.host if request.client else "unknown"
+
+
+# In-memory, not persisted -- fine for a single Starter-tier instance (no
+# horizontal scaling to lose track across), and resets on redeploy, which
+# is an acceptable tradeoff for a form endpoint, not a security perimeter
+# that needs to survive a restart. {ip: [timestamp, ...]} of recent
+# submission attempts, successful or not -- a bot flooding invalid data
+# should get throttled just as much as one flooding valid-looking data.
+_upload_attempts: dict[str, list[float]] = {}
+RATE_LIMIT_WINDOW_SECONDS = 600  # 10 min
+RATE_LIMIT_MAX_ATTEMPTS = 3  # generous enough for a real visitor fixing a typo twice
+
+
+def is_rate_limited(ip: str) -> bool:
+    now = time.monotonic()
+    attempts = [t for t in _upload_attempts.get(ip, []) if now - t < RATE_LIMIT_WINDOW_SECONDS]
+    attempts.append(now)
+    _upload_attempts[ip] = attempts
+    return len(attempts) > RATE_LIMIT_MAX_ATTEMPTS
+
+
+def verify_turnstile(token: str, remote_ip: str) -> bool:
+    """True (i.e. "allow it") if Turnstile isn't configured at all -- see
+    TURNSTILE_SECRET_KEY's own comment on why that's the right default."""
+    if not TURNSTILE_SECRET_KEY:
+        return True
+    if not token:
+        return False
+    try:
+        resp = requests.post(
+            TURNSTILE_VERIFY_URL,
+            data={"secret": TURNSTILE_SECRET_KEY, "response": token, "remoteip": remote_ip},
+            timeout=10,
+        )
+        resp.raise_for_status()
+        return bool(resp.json().get("success"))
+    except (requests.RequestException, ValueError):
+        # Cloudflare's verify endpoint being unreachable isn't the
+        # submitter's fault, but failing open here would make the whole
+        # CAPTCHA pointless the moment it's most needed (under load) --
+        # failing closed means a real visitor sees "try again", not that
+        # spam gets a free pass during an outage.
+        return False
 
 
 def get_all_listings() -> list[dict]:
@@ -359,6 +434,14 @@ LEAFLET_HEAD = """
       integrity="sha256-YU3qCpj/P06tdPBJGPax0bm6Q1wltfwjsho5TR4+TYc=" crossorigin="" />
 <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css"
       integrity="sha256-YSWCMtmNZNwqex4CEw1nQhvFub2lmU7vcCKP+XVwwXA=" crossorigin="" />
+"""
+
+# No integrity hash here (unlike LEAFLET_HEAD above) -- Cloudflare serves
+# this script from a URL that deliberately has no versioned/pinned release,
+# so it can roll out fixes to the widget itself without every site
+# embedding it needing to update a hash.
+TURNSTILE_HEAD = """
+<script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>
 """
 
 
@@ -1264,6 +1347,8 @@ def manual_upload_form_html(banner: str = "") -> str:
           <span class="hint">Optional -- a link to where you found this (a listing, a county site, a news article).</span>
         </div>
 
+        {f'<div class="cf-turnstile" data-sitekey="{TURNSTILE_SITE_KEY}"></div>' if TURNSTILE_SITE_KEY else ""}
+
         <button type="submit">Submit property</button>
       </form>
     """
@@ -1276,11 +1361,16 @@ def manual_upload_page(success: str | None = None, error: str | None = None):
         banner = '<div class="form-banner success">Thanks -- your property was added and now appears in the listings on the home page.</div>'
     elif error:
         banner = f'<div class="form-banner error">{escape(error)}</div>'
-    return page_shell("GovLandScout - Manual Property Uploads", "manual-upload", manual_upload_form_html(banner))
+    extra_head = TURNSTILE_HEAD if TURNSTILE_SITE_KEY else ""
+    return page_shell(
+        "GovLandScout - Manual Property Uploads", "manual-upload", manual_upload_form_html(banner),
+        extra_head=extra_head,
+    )
 
 
 @app.post("/manual-upload")
 def manual_upload_submit(
+    request: Request,
     county: str = Form(...),
     address: str = Form(...),
     minimum_bid: str = Form(""),
@@ -1288,11 +1378,28 @@ def manual_upload_submit(
     description: str = Form(""),
     source_url: str = Form(""),
     website: str = Form(""),  # honeypot -- real visitors never see or fill this in
+    turnstile_token: str = Form("", alias="cf-turnstile-response"),
 ):
+    ip = client_ip(request)
+
+    # Checked before the honeypot, not after -- a bot hammering this
+    # endpoint should get throttled regardless of which check would've
+    # caught it, and this is the cheapest one to run first.
+    if is_rate_limited(ip):
+        return RedirectResponse(
+            "/manual-upload?error=Too many submissions from this address -- please try again in a few minutes.",
+            status_code=303,
+        )
+
     # Bots that blindly fill every field trip the honeypot. Don't tip them
     # off with an error -- just pretend it worked and skip the insert.
     if website.strip():
         return RedirectResponse("/manual-upload?success=1", status_code=303)
+
+    if not verify_turnstile(turnstile_token, ip):
+        return RedirectResponse(
+            "/manual-upload?error=CAPTCHA verification failed -- please try again.", status_code=303,
+        )
 
     county = county.strip()
     address = address.strip()
