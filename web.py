@@ -455,8 +455,59 @@ def extract_city(address: str | None) -> str:
     return parts[-2] if len(parts) >= 3 else ""
 
 
-@app.get("/", response_class=HTMLResponse)
-def deals_page():
+def listing_for_js(l: dict) -> dict:
+    # Texas has an actual Houston County (Crockett/Kennard/Lovelady --
+    # ~100mi from Houston, no relation to it) distinct from Harris
+    # County, which is where the city of Houston actually is. Searching
+    # "houston" should find Houston addresses, not Houston COUNTY's
+    # unrelated listings, so leave the raw county name out of the
+    # search blob for this one case -- those listings are still
+    # findable by their own city/address text, just not by "houston".
+    search_county = "" if l["county"] == "Houston" else l["county"]
+    # Prefer matching on just the city; only fall back to the full
+    # street address for the ~13% of records too irregularly formatted
+    # to reliably split out a city (no third comma segment).
+    city = extract_city(l["address"])
+    search_place = city if city else (l["address"] or "")
+    metro_terms = " ".join(sorted(COUNTY_METRO_ALIASES.get(l["county"], ())))
+    search_text = f"{search_county} {l['precinct']} {search_place} {metro_terms}".lower()
+    image_url = (
+        f"/api/thumbnail?lat={l['latitude']}&lon={l['longitude']}"
+        if l["latitude"] is not None and l["longitude"] is not None
+        else None
+    )
+    return {
+        "county": l["county"],
+        "precinct": l["precinct"] or None,
+        "account_number": l["account_number"],
+        "is_manual": l["source"] == "manual",
+        "minimum_bid": l["minimum_bid"],
+        "estimated_value": l["estimated_value"],
+        "equity": l["equity"],
+        "equity_pct": l["equity_pct"],
+        "address": l["address"] or None,
+        "description": (l["description"][:120] if l["description"] else None),
+        "source_url": l["source_url"],
+        "maps_url": l["maps_url"],
+        "latitude": l["latitude"],
+        "longitude": l["longitude"],
+        "image_url": image_url,
+        "search_text": search_text,
+    }
+
+
+def compute_home_page_payload() -> dict:
+    """
+    The expensive part of rendering "/" -- fetching every listing, running
+    the per-listing search-text/image-url transform, and JSON-serializing
+    the result. Measured taking the page from ~5s to ~18s to respond, on
+    every single request, even though the underlying data only changes
+    once a day when the scrape pipeline runs. build_home_cache.py calls
+    this once per day (the last step of run_daily_scrapers.py) and stores
+    the result via combined_db.write_home_page_cache(); deals_page() below
+    reads that cache instead of calling this directly, falling back to
+    calling it live only if the cache hasn't been populated yet.
+    """
     listings = get_all_listings()
     priced_count = sum(1 for l in listings if l["equity_pct"] is not None)
 
@@ -464,54 +515,42 @@ def deals_page():
     value_min = math.floor(min(values) / 1000) * 1000 if values else 0
     value_max = math.ceil(max(values) / 1000) * 1000 if values else 0
 
-    def listing_for_js(l: dict) -> dict:
-        # Texas has an actual Houston County (Crockett/Kennard/Lovelady --
-        # ~100mi from Houston, no relation to it) distinct from Harris
-        # County, which is where the city of Houston actually is. Searching
-        # "houston" should find Houston addresses, not Houston COUNTY's
-        # unrelated listings, so leave the raw county name out of the
-        # search blob for this one case -- those listings are still
-        # findable by their own city/address text, just not by "houston".
-        search_county = "" if l["county"] == "Houston" else l["county"]
-        # Prefer matching on just the city; only fall back to the full
-        # street address for the ~13% of records too irregularly formatted
-        # to reliably split out a city (no third comma segment).
-        city = extract_city(l["address"])
-        search_place = city if city else (l["address"] or "")
-        metro_terms = " ".join(sorted(COUNTY_METRO_ALIASES.get(l["county"], ())))
-        search_text = f"{search_county} {l['precinct']} {search_place} {metro_terms}".lower()
-        image_url = (
-            f"/api/thumbnail?lat={l['latitude']}&lon={l['longitude']}"
-            if l["latitude"] is not None and l["longitude"] is not None
-            else None
-        )
-        return {
-            "county": l["county"],
-            "precinct": l["precinct"] or None,
-            "account_number": l["account_number"],
-            "is_manual": l["source"] == "manual",
-            "minimum_bid": l["minimum_bid"],
-            "estimated_value": l["estimated_value"],
-            "equity": l["equity"],
-            "equity_pct": l["equity_pct"],
-            "address": l["address"] or None,
-            "description": (l["description"][:120] if l["description"] else None),
-            "source_url": l["source_url"],
-            "maps_url": l["maps_url"],
-            "latitude": l["latitude"],
-            "longitude": l["longitude"],
-            "image_url": image_url,
-            "search_text": search_text,
-        }
-
     # Escape "</" so a stray "</script>" inside any scraped field (address,
     # description, ...) can't break out of the script tag this gets embedded
     # in -- valid both as JSON and as the JS string it becomes once parsed.
     listings_json = json.dumps([listing_for_js(l) for l in listings]).replace("</", "<\\/")
 
+    return {
+        "listings_json": listings_json,
+        "value_min": value_min,
+        "value_max": value_max,
+        "total_count": len(listings),
+        "priced_count": priced_count,
+    }
+
+
+@app.get("/", response_class=HTMLResponse)
+def deals_page():
+    conn = combined_db.get_connection()
+    cached = combined_db.fetch_home_page_cache(conn)
+    conn.close()
+
+    # Falls back to computing live (the slow path this cache exists to
+    # avoid) only if build_home_cache.py has genuinely never run yet --
+    # e.g. right after this table's first deploy, before the next day's
+    # scrape pipeline builds the first cache entry. Every request after
+    # that hits the fast path instead.
+    payload = cached if cached is not None else compute_home_page_payload()
+
+    listings_json = payload["listings_json"]
+    value_min = payload["value_min"]
+    value_max = payload["value_max"]
+    total_count = payload["total_count"]
+    priced_count = payload["priced_count"]
+
     body = f"""
       <h1>GovLandScout - Texan's Distressed Property Finder</h1>
-      <p class="subtitle">GovLandScout is a project attempting to show a state-wide listing of all property being sold by the government+, to try to help Texan's combat rising home prices and a lack of housing affordability. {len(listings)} total listings across all sources. {priced_count} have a full equity calculation and are
+      <p class="subtitle">GovLandScout is a project attempting to show a state-wide listing of all property being sold by the government+, to try to help Texan's combat rising home prices and a lack of housing affordability. {total_count} total listings across all sources. {priced_count} have a full equity calculation and are
          ranked first below; the rest are shown afterward with "{NO_DATA}" where a field doesn't apply.</p>
 
       <div class="controls card">

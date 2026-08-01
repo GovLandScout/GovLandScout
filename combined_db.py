@@ -143,6 +143,28 @@ def init_db(conn: PgConnection):
             summary TEXT NOT NULL
         )
     """)
+
+    # A single-row cache of the home page's precomputed listings JSON (see
+    # build_home_cache.py, run as the last step of run_daily_scrapers.py).
+    # Rebuilding this -- fetching all ~4,500 listings, running the
+    # per-listing search-text/image-url transform, and JSON-serializing
+    # the result -- was measured taking the home page from ~5s to ~18s to
+    # respond, on every single request, even though the underlying data
+    # only changes once a day. Written once per scrape, read on every page
+    # load instead of rebuilt on every page load. `id=1` enforced so
+    # there's ever only one row -- writing always replaces it, there's no
+    # history to keep.
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS home_page_cache (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            listings_json TEXT NOT NULL,
+            value_min INTEGER NOT NULL,
+            value_max INTEGER NOT NULL,
+            total_count INTEGER NOT NULL,
+            priced_count INTEGER NOT NULL,
+            generated_at TEXT NOT NULL
+        )
+    """)
     conn.commit()
 
 
@@ -182,6 +204,46 @@ def fetch_latest_bell_notification(conn: PgConnection) -> tuple[str, int, str] |
         "SELECT created_at, error_count, summary FROM bell_notifications ORDER BY created_at DESC LIMIT 1"
     ).fetchone()
     return tuple(row) if row else None
+
+
+def write_home_page_cache(
+    conn: PgConnection, listings_json: str, value_min: int, value_max: int,
+    total_count: int, priced_count: int,
+):
+    now = datetime.now(timezone.utc).isoformat()
+    conn.execute(
+        """
+        INSERT INTO home_page_cache (id, listings_json, value_min, value_max, total_count, priced_count, generated_at)
+        VALUES (1, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT (id) DO UPDATE SET
+            listings_json = EXCLUDED.listings_json,
+            value_min = EXCLUDED.value_min,
+            value_max = EXCLUDED.value_max,
+            total_count = EXCLUDED.total_count,
+            priced_count = EXCLUDED.priced_count,
+            generated_at = EXCLUDED.generated_at
+        """,
+        (listings_json, value_min, value_max, total_count, priced_count, now),
+    )
+    conn.commit()
+
+
+def fetch_home_page_cache(conn: PgConnection) -> dict | None:
+    """None if build_home_cache.py hasn't ever run yet -- caller falls back to computing live in that case."""
+    row = conn.execute(
+        "SELECT listings_json, value_min, value_max, total_count, priced_count, generated_at FROM home_page_cache WHERE id = 1"
+    ).fetchone()
+    if not row:
+        return None
+    listings_json, value_min, value_max, total_count, priced_count, generated_at = row
+    return {
+        "listings_json": listings_json,
+        "value_min": value_min,
+        "value_max": value_max,
+        "total_count": total_count,
+        "priced_count": priced_count,
+        "generated_at": generated_at,
+    }
 
 
 def upsert_listing(

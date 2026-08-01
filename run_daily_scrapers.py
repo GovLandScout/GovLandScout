@@ -84,6 +84,11 @@ def main():
     # tracked the same way so a broken geocoder shows up on the bell too.
     run_step(project_dir, run_started_at, "geocode_backfill.py")
 
+    # Runs after geocoding, not before -- the home page cache should
+    # reflect that day's coordinates too, not a version from just before
+    # they were backfilled.
+    run_step(project_dir, run_started_at, "build_home_cache.py")
+
 
 if __name__ == "__main__":
     main()
