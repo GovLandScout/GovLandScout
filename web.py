@@ -1131,6 +1131,8 @@ SOURCE_LABELS = {
     "publicsurplus.com": "PublicSurplus (Texas government sellers)",
     "realauction.com": "RealAuction/RealForeclose (Sheriff & Constable sales)",
     "guadalupetx.gov": "Guadalupe County (self-published)",
+    "govease.com": "GovEase (Sheriff & Constable sales)",
+    "collincountytx.gov": "Collin County Constable Sales (self-published)",
     "manual": "User-submitted (unverified)",
 }
 
@@ -1197,14 +1199,17 @@ def investment_info_page():
          This page is a plain-language overview, not legal or tax advice -- see the disclaimer at the bottom.</p>
 
       <div class="card prose" style="padding: 1.5rem 1.75rem; margin-bottom: 1.5rem;">
-        <h2>County tax sales (LGBS, PBFCM, MVBA, Harris County Tax Office, RealAuction/RealForeclose)</h2>
+        <h2>County tax sales (LGBS, PBFCM, MVBA, Harris County Tax Office, RealAuction/RealForeclose, GovEase,
+           Collin County Constable Sales)</h2>
         <p><b>What it is:</b> a county forecloses on a property over unpaid property taxes and sells it at public
            auction to recover the debt, under Texas Property Tax Code Chapter 34. This is the majority of listings
            on this site. Every sale here is legally conducted by the county Sheriff or Constable regardless of
            source -- most counties also hire a trustee law firm (LGBS, PBFCM, or MVBA) to handle the marketing and
            paperwork, who then publish the listings on their own site; Travis and Caldwell counties instead list
-           and run bidding directly through the RealAuction/RealForeclose online platform. Same process, same
-           rules below, different place the listing happens to be published.</p>
+           and run bidding directly through the RealAuction/RealForeclose online platform, and Denton, Grayson, and
+           Wichita counties do the same through GovEase. Collin County publishes its own Constable Sale notices
+           directly rather than using a trustee firm or shared platform. Same process, same rules below, different
+           place the listing happens to be published.</p>
         <p><b>Deed you receive:</b> a Sheriff's or Constable's Deed, which conveys only whatever interest the prior
            owner actually had -- not a general warranty deed. Title is not guaranteed clear; most title companies
            won't insure it until any redemption period has passed and, often, until a quiet-title suit has been
