@@ -3,7 +3,7 @@ name: Scheduled scrape
 # Runs all scrapers on a schedule and writes to the same Postgres database
 # the live site reads from (see combined_db.py). Deliberately NOT run as
 # part of the Render web service's startup anymore -- a full run takes
-# 3-4+ minutes (PBFCM and MVBA are both slow, crawl-delay-bound scrapes),
+# 12-20+ minutes (PBFCM and MVBA are both slow, crawl-delay-bound scrapes),
 # which used to exceed Render's boot timeout and leave the site serving
 # whatever partial data existed when the boot got killed.
 
@@ -15,7 +15,12 @@ on:
 jobs:
   scrape:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # Was 20 -- on 2026-08-02 the run finished (all scrapers + geocode_backfill +
+    # build_home_cache) at 20m9s, just 2s past the old limit, getting the last
+    # step's own result cancelled before it could be recorded. 35 gives real
+    # headroom now that govease_scraper.py/collin_scraper.py are also in the
+    # SCRAPERS list, not just enough for today's exact timing.
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@v4
 
