@@ -29,11 +29,20 @@ import combined_db
 URL = "https://public.tdhca.state.tx.us/pub/T_HF_CLEARINGHOUSE.list_for_sale"
 DETAIL_URL = "https://public.tdhca.state.tx.us/pub/T_HF_CLEARINGHOUSE.display_property"
 DB_PATH = "tdhca_properties.db"
-FETCH_RETRIES = 4
-RETRY_BACKOFF_SECONDS = 5  # doubles each retry: 5s, 10s, 20s, 40s
+FETCH_RETRIES = 6
+RETRY_BACKOFF_SECONDS = 5  # doubles each retry, capped at 60s: 5s, 10s, 20s, 40s, 60s
 # Failed once with "Connection refused" on 2026-07-29 -- confirmed transient
 # (the server was reachable again minutes later), but there was no retry
 # at all before this, so that one blip was enough to fail the whole run.
+#
+# On 2026-08-01 it failed again, this time with ConnectTimeoutError on all
+# 4 attempts (~100s total) -- every other scraper in the same run succeeded
+# from the same GitHub Actions runner, and the site responded instantly
+# when checked directly right after, so this was a longer TDHCA-side
+# outage/rate-limit rather than a general network issue. Bumped retries
+# 4->6 and capped the backoff (instead of letting it keep doubling to
+# 80s+) for more patience against a slow recovery without one retry
+# eating the whole run's time budget.
 
 HEADERS = {
     "User-Agent": "GovLandScout-SchoolProject/1.0 (contact: your-email@example.com)"
@@ -62,7 +71,7 @@ def fetch_page_html() -> str:
     last_error = None
     for attempt in range(FETCH_RETRIES):
         if attempt > 0:
-            time.sleep(RETRY_BACKOFF_SECONDS * (2 ** (attempt - 1)))
+            time.sleep(min(RETRY_BACKOFF_SECONDS * (2 ** (attempt - 1)), 60))
         try:
             resp = session.get(URL, headers=HEADERS, timeout=30)
             resp.raise_for_status()
