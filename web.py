@@ -1320,10 +1320,23 @@ def manual_upload_form_html(banner: str = "") -> str:
         </div>
 
         <div class="field">
-          <label for="address">Address *</label>
-          <input type="text" id="address" name="address" placeholder="123 Main St, Houston, TX 77002" required maxlength="300">
-          <span class="hint">Used to plot the property on the map -- format as street, city, state, zip if possible.</span>
+          <label for="address">Address</label>
+          <input type="text" id="address" name="address" placeholder="123 Main St, Houston, TX 77002" maxlength="300">
+          <span class="hint">Used to plot the property on the map -- format as street, city, state, zip if possible.
+             Don't have a street address (e.g. vacant land)? Enter GPS coordinates below instead.</span>
         </div>
+
+        <div class="two-col">
+          <div class="field">
+            <label for="latitude">Latitude</label>
+            <input type="text" id="latitude" name="latitude" placeholder="e.g. 29.7604" maxlength="20">
+          </div>
+          <div class="field">
+            <label for="longitude">Longitude</label>
+            <input type="text" id="longitude" name="longitude" placeholder="e.g. -95.3698" maxlength="20">
+          </div>
+        </div>
+        <span class="hint" style="margin-top: -0.6rem; margin-bottom: 1.1rem;">Only needed if there's no street address to enter above.</span>
 
         <div class="two-col">
           <div class="field">
@@ -1342,9 +1355,10 @@ def manual_upload_form_html(banner: str = "") -> str:
         </div>
 
         <div class="field">
-          <label for="source_url">Source link</label>
-          <input type="url" id="source_url" name="source_url" placeholder="https://..." maxlength="500">
-          <span class="hint">Optional -- a link to where you found this (a listing, a county site, a news article).</span>
+          <label for="source_url">Source link *</label>
+          <input type="url" id="source_url" name="source_url" placeholder="https://..." required maxlength="500">
+          <span class="hint">A link to where you found this (a listing, a county site, a news article) -- required so every
+             submitted property can be traced back to where it came from.</span>
         </div>
 
         {f'<div class="cf-turnstile" data-sitekey="{TURNSTILE_SITE_KEY}"></div>' if TURNSTILE_SITE_KEY else ""}
@@ -1372,7 +1386,9 @@ def manual_upload_page(success: str | None = None, error: str | None = None):
 def manual_upload_submit(
     request: Request,
     county: str = Form(...),
-    address: str = Form(...),
+    address: str = Form(""),
+    latitude: str = Form(""),
+    longitude: str = Form(""),
     minimum_bid: str = Form(""),
     estimated_value: str = Form(""),
     description: str = Form(""),
@@ -1403,8 +1419,40 @@ def manual_upload_submit(
 
     county = county.strip()
     address = address.strip()
-    if not county or not address:
-        return RedirectResponse("/manual-upload?error=County and address are required.", status_code=303)
+    source_url = source_url.strip()
+    lat_str = latitude.strip()
+    lon_str = longitude.strip()
+
+    if not county:
+        return RedirectResponse("/manual-upload?error=County is required.", status_code=303)
+
+    if not source_url:
+        return RedirectResponse(
+            "/manual-upload?error=A source link is required, so every submitted property can be traced back to where it came from.",
+            status_code=303,
+        )
+
+    if not address and not (lat_str and lon_str):
+        return RedirectResponse(
+            "/manual-upload?error=Address or GPS coordinates are required.", status_code=303,
+        )
+
+    manual_lat = manual_lon = None
+    if lat_str or lon_str:
+        if not (lat_str and lon_str):
+            return RedirectResponse(
+                "/manual-upload?error=Provide both latitude and longitude, not just one.", status_code=303,
+            )
+        manual_lat, manual_lon = safe_float(lat_str), safe_float(lon_str)
+        if manual_lat is None or manual_lon is None:
+            return RedirectResponse(
+                "/manual-upload?error=Latitude and longitude must be numbers.", status_code=303,
+            )
+        if not (-90 <= manual_lat <= 90) or not (-180 <= manual_lon <= 180):
+            return RedirectResponse(
+                "/manual-upload?error=Latitude must be between -90 and 90, longitude between -180 and 180.",
+                status_code=303,
+            )
 
     min_bid_str = None
     if minimum_bid.strip():
@@ -1425,8 +1473,17 @@ def manual_upload_submit(
     # relies on to know whether to insert or update.
     account_number = f"MANUAL-{uuid.uuid4().hex[:10].upper()}"
 
-    geocoded = geocode_address(address)
-    latitude, longitude = geocoded if geocoded else (None, None)
+    if address:
+        # Best-effort: fall back to the manually-entered coordinates (if any
+        # were also given) rather than leaving the listing unplottable when
+        # geocoding the address fails or times out.
+        geocoded = geocode_address(address)
+        latitude, longitude = geocoded if geocoded else (manual_lat, manual_lon)
+    else:
+        # No street address to geocode or display -- use the coordinates
+        # directly, and show them in place of an address on the site.
+        latitude, longitude = manual_lat, manual_lon
+        address = f"{manual_lat}, {manual_lon}"
 
     conn = combined_db.get_connection()
     combined_db.upsert_listing(
@@ -1440,7 +1497,7 @@ def manual_upload_submit(
         description=description.strip() or None,
         status="User submitted",
         source="manual",
-        source_url=source_url.strip() or None,
+        source_url=source_url or None,
         latitude=latitude,
         longitude=longitude,
     )
