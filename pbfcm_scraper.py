@@ -122,13 +122,23 @@ def parse_legal_address_cell(text: str) -> tuple[str, str | None]:
     return " ".join(lines), None
 
 
+MONEY_PATTERN = re.compile(r"^(\d+(?:\.\d+)?)")
+
+
 def parse_money(text: str | None) -> str | None:
+    """
+    Only the *leading* number has to match, not the whole cleaned string --
+    Brazoria and Hays both follow the dollar figure with more text on the
+    same cell ("$17,684.51\n2025 Taxes\nDue", "$34,588.55\nSubject to\n2026
+    taxes"), which a full-string match rejected outright even though the
+    number itself parses fine. Still correctly rejects a pure placeholder
+    like "TBD" -- there's no leading digit there at all.
+    """
     if not text:
         return None
     cleaned = text.replace("$", "").replace(",", "").strip()
-    if not cleaned or not re.match(r"^\d+(\.\d+)?$", cleaned):
-        return None  # e.g. "TBD"
-    return cleaned
+    match = MONEY_PATTERN.match(cleaned)
+    return match.group(1) if match else None
 
 
 def join_lines(text: str) -> str:
