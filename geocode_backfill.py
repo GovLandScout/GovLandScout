@@ -19,12 +19,18 @@ running it more than once per day. Can still be run by hand any time too
 
 import csv
 import io
+import re
 
 import requests
 
 import combined_db
 
 BATCH_GEOCODE_URL = "https://geocoding.geo.census.gov/geocoder/locations/addressbatch"
+
+# A dangling state token where a city should be -- "E Oak St, Texas 76853"
+# or "Lampasas, Texas" -- means this address never actually named a city at
+# all, just street + state(+zip). Treated as no city rather than guessed at.
+DANGLING_STATE_PATTERN = re.compile(r"^(texas|tx)\b", re.IGNORECASE)
 
 
 def fetch_ungeocoded(conn: combined_db.PgConnection) -> list[tuple[str, str, str]]:
@@ -36,20 +42,47 @@ def fetch_ungeocoded(conn: combined_db.PgConnection) -> list[tuple[str, str, str
     return [(r[0], r[1], r[2]) for r in rows]
 
 
-def parse_address(address: str) -> tuple[str, str, str, str] | None:
+def parse_address(address: str, county_fallback: str | None = None) -> tuple[str, str, str, str] | None:
     """
-    Addresses are formatted "<street>, <city>, TX <zip>" -- split into the
-    separate street/city/state/zip fields the batch geocoder expects.
-    Returns None for the minority too irregular to split reliably (no
-    third comma segment, same rows web.py's extract_city() can't parse).
+    Addresses are usually formatted "<street>, <city>, TX <zip>" -- split
+    into the street/city/state/zip fields the batch geocoder expects.
+    Increasingly permissive as information gets scarcer, since the batch
+    geocoder accepts a blank zip and a real street can often still be
+    resolved without one:
+
+      - 3+ comma segments: zip is whatever digits are in the 3rd segment,
+        blank if there aren't any (e.g. MVBA addresses ending "..., Bastrop,
+        Texas" with no zip at all -- previously rejected outright for that).
+      - Exactly 2 segments ("<street>, <city>"): treated as street/city with
+        a blank zip. Most of these are GovEase listings, whose own site
+        never gives more than "<street>, <city>" to begin with.
+      - No comma at all: there's no city in the text either, so the
+        listing's own county name is used as a stand-in city -- coarser
+        than a real one, but the Census geocoder can often still resolve a
+        street within a named county, and a wrong guess just comes back
+        No_Match rather than a bad coordinate (see geocode_batch). This is
+        what recovers GovEase's Denton listings, whose site gives only a
+        bare street with no city at all.
+
+    Returns None for the minority still too irregular to use even this way
+    -- no street, or a dangling state token where a city should be.
     """
-    parts = [p.strip() for p in address.split(",")]
-    if len(parts) < 3:
+    parts = [p.strip() for p in address.split(",") if p.strip()]
+    if not parts or not parts[0]:
         return None
-    street, city = parts[0], parts[1]
-    zip_code = "".join(c for c in parts[2].split()[-1] if c.isdigit())[:5]
-    if not street or not city or len(zip_code) != 5:
+    street = parts[0]
+
+    if len(parts) >= 2:
+        city = parts[1]
+        if DANGLING_STATE_PATTERN.match(city):
+            return None  # "<street>, Texas[ zip]" -- no real city was ever given
+        zip_code = "".join(c for c in parts[2].split()[-1] if c.isdigit())[:5] if len(parts) >= 3 and parts[2].split() else ""
+    elif county_fallback:
+        city = county_fallback
+        zip_code = ""
+    else:
         return None
+
     return street, city, "TX", zip_code
 
 
@@ -95,7 +128,7 @@ def main():
     id_to_key = {}
     skipped = 0
     for county, account_number, address in ungeocoded:
-        parsed = parse_address(address)
+        parsed = parse_address(address, county_fallback=county)
         if parsed is None:
             skipped += 1
             continue

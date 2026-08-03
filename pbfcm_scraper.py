@@ -56,8 +56,42 @@ COUNTY_PATTERN = re.compile(
     r"([A-Z][A-Z ]+?)\s+COUNTY(?:\s+PCT\.?\s*(\d+))?(?:\s+[A-Z]+){0,2}\s+SALES?\s+FOR",
     re.IGNORECASE,
 )
+# Fallback for documents whose page-1 text doesn't follow COUNTY_PATTERN at
+# all -- e.g. a banner page ("SALES FOR AUGUST 4, 2026") with the county
+# named only in the filename, or wording COUNTY_PATTERN doesn't anticipate
+# ("Hays County Government Center" has no "SALES FOR" nearby). PBFCM's own
+# filenames are consistent enough to lean on: "{date}{county}taxsale.pdf" or
+# "{county}pct{n}taxsale.pdf".
+FILENAME_COUNTY_PATTERN = re.compile(r"([a-z]+?)(?:pct(\d+))?taxsale", re.IGNORECASE)
+FILENAME_COUNTY_OVERRIDES = {"ftbend": "Fort Bend"}
+# Filenames ending in this aren't a county's own sale at all (e.g.
+# "whitneyisdtaxsale.pdf" is Whitney ISD's), so leave those unresolved --
+# same as COUNTY_PATTERN finding nothing for them in the page text.
+FILENAME_NON_COUNTY_SUFFIXES = ("isd",)
 EMBEDDED_ACCOUNT_PATTERN = re.compile(r"ACCOUNT\s*#?\s*(?:NUMBER)?\s*:?\s*(\d{6,})", re.IGNORECASE)
-EMBEDDED_VALUE_PATTERN = re.compile(r"Adjudged Value:\s*\$?([\d,]+\.\d{2})", re.IGNORECASE)
+# Tolerates extra wording between "Account No" and the value, e.g. "Tax
+# Account No. R53102" (Hays' embedded-account phrasing, alphanumeric, unlike
+# EMBEDDED_ACCOUNT_PATTERN's plain-digit "ACCOUNT #" phrasing above).
+EMBEDDED_TAX_ACCOUNT_PATTERN = re.compile(r"Tax Account No\.?\s*([A-Za-z0-9]+)", re.IGNORECASE)
+# Tolerates extra wording between "Adjudged Value" and the colon, e.g. "Adjudged
+# Value (at time of judgment): $74,980.00" (Hays' phrasing) as well as the
+# plain "Adjudged Value: $8,900.00" (Waller's) the original pattern covered.
+EMBEDDED_VALUE_PATTERN = re.compile(r"Adjudged Value[^:$]*:\s*\$?([\d,]+\.\d{2})", re.IGNORECASE)
+
+
+def extract_county_from_filename(source_url: str) -> tuple[str | None, str | None]:
+    basename = source_url.rsplit("/", 1)[-1].lower()
+    match = FILENAME_COUNTY_PATTERN.search(basename)
+    if not match:
+        return None, None
+    slug = match.group(1)
+    if slug.endswith(FILENAME_NON_COUNTY_SUFFIXES):
+        return None, None
+    if slug.endswith("county"):
+        slug = slug[: -len("county")]
+    county = FILENAME_COUNTY_OVERRIDES.get(slug, slug.title())
+    precinct = f"PCT {match.group(2)}" if match.group(2) else None
+    return county, precinct
 
 
 # ---------------------------------------------------------------------------
@@ -210,6 +244,87 @@ def parse_row_5col_embedded_value(row: list[str]) -> dict | None:
     }
 
 
+def parse_row_case_legal_bid(row: list[str], value_kind: str | None) -> dict | None:
+    """
+    Hall/Hockley/Lamb/Nolan/Scurry/Stonewall/Wheeler style: case_no | legal
+    description + address | minimum bid | optional 4th column. That 4th
+    column's meaning varies by county -- a GEO/CAD code (Hall), an appraised
+    value (Wheeler), free-form notes (Hockley, Stonewall), or nothing at all
+    (Lamb, Nolan, Scurry) -- so parse_pdf() inspects the real header text and
+    tells this which one it's looking at via value_kind ("geo", "value", or
+    None). No county here publishes an account number of its own when this
+    format lacks a GEO column, so cause_no doubles as account_number in that
+    case -- it's already the real per-row unique identifier this site's data
+    is keyed on (see module docstring).
+    """
+    if len(row) < 3 or not row[0] or not re.search(r"\d", row[0]):
+        return None
+    cause_no = join_lines(row[0])
+    legal, addr = parse_legal_address_cell(row[1])
+    adjudged_value = None
+    account_number = None
+    if len(row) > 3 and row[3]:
+        fourth = join_lines(row[3])
+        if value_kind == "value":
+            adjudged_value = parse_money(fourth)
+        elif value_kind == "geo":
+            account_number = fourth or None
+    return {
+        "cause_no": cause_no, "district_court": None, "judgment_date": None,
+        "style_of_case": None, "legal_description": legal, "address": addr,
+        "adjudged_value": adjudged_value, "minimum_bid": parse_money(row[2]),
+        "account_number": account_number or cause_no,
+    }
+
+
+def parse_row_item_suit_legal_bid(row: list[str]) -> dict | None:
+    """Hays style: item# | tax suit no(+style) | legal description with embedded
+    adjudged value and tax account # | minimum bid. Falls back to cause_no as
+    account_number when the account isn't embedded in the legal text, same
+    reasoning as parse_row_case_legal_bid above."""
+    if len(row) < 4 or not row[1] or not re.search(r"\d", row[1]):
+        return None
+    lines = [l.strip() for l in row[1].split("\n") if l.strip()]
+    cause_no = lines[0] if lines else None
+    if not cause_no or not re.search(r"\d", cause_no):
+        return None
+    style = " ".join(lines[1:]) if len(lines) > 1 else None
+    legal = join_lines(row[2])
+    value_match = EMBEDDED_VALUE_PATTERN.search(legal)
+    account_match = EMBEDDED_TAX_ACCOUNT_PATTERN.search(legal)
+    return {
+        "cause_no": cause_no, "district_court": None, "judgment_date": None,
+        "style_of_case": style, "legal_description": legal, "address": None,
+        "adjudged_value": parse_money(value_match.group(1)) if value_match else None,
+        "minimum_bid": parse_money(row[3]),
+        "account_number": account_match.group(1) if account_match else cause_no,
+    }
+
+
+def parse_row_brazoria(row: list[str]) -> dict | None:
+    """Brazoria style: item# | cause_no(+style) | [blank, blank] | legal
+    description with embedded adjudged value | [blank, blank] | Geographic
+    ID (the real account number here, unlike the embedded-and-mixed-in
+    account/roll numbers parse_row_5col_embedded_value has to disentangle
+    for Waller) | minimum bid."""
+    if len(row) < 9 or not row[1] or not re.search(r"\d", row[1]):
+        return None
+    lines = [l.strip() for l in row[1].split("\n") if l.strip()]
+    cause_no = lines[0] if lines else None
+    if not cause_no or not re.search(r"\d", cause_no):
+        return None
+    style = " ".join(lines[1:]) if len(lines) > 1 else None
+    legal = join_lines(row[4])
+    value_match = EMBEDDED_VALUE_PATTERN.search(legal)
+    return {
+        "cause_no": cause_no, "district_court": None, "judgment_date": None,
+        "style_of_case": style, "legal_description": legal, "address": None,
+        "adjudged_value": parse_money(value_match.group(1)) if value_match else None,
+        "minimum_bid": parse_money(row[8]),
+        "account_number": join_lines(row[7]) or cause_no,
+    }
+
+
 # Header signature -> (column count, required keyword per column index, parser).
 # Matched by column count first, then by keyword presence, so different
 # header wording for the same layout (e.g. "Taxpayer" vs "Taxpayer Name")
@@ -244,6 +359,24 @@ FORMATS = [
         "columns": 5,
         "keywords": {2: "legal", 4: "minimum"},
         "parser": parse_row_5col_embedded_value,
+    },
+    {
+        "name": "case-legal-bid",
+        "columns": 3,
+        "keywords": {0: "case", 1: "legal", 2: "minimum"},
+        "parser": parse_row_case_legal_bid,  # bound to a real value_kind in parse_pdf() -- see there
+    },
+    {
+        "name": "item-suit-legal-bid",
+        "columns": 4,
+        "keywords": {1: "suit", 2: "legal", 3: "minimum"},
+        "parser": parse_row_item_suit_legal_bid,
+    },
+    {
+        "name": "brazoria",
+        "columns": 9,
+        "keywords": {1: "cause", 4: "legal", 7: "geographic", 8: "minimum"},
+        "parser": parse_row_brazoria,
     },
 ]
 
@@ -280,27 +413,64 @@ def find_pdf_links() -> list[str]:
     return sorted(set(links))
 
 
+def bind_parser(fmt: dict, header_row: list[str]):
+    """Most formats' parser is ready to use as-is; case-legal-bid's 4th column
+    means something different per county (see parse_row_case_legal_bid), so
+    that one gets bound to whichever meaning this document's actual header
+    text implies before it's used on any row."""
+    if fmt["name"] != "case-legal-bid":
+        return fmt["parser"]
+    fourth_label = (header_row[3] or "").lower() if len(header_row) > 3 else ""
+    if "value" in fourth_label:
+        value_kind = "value"
+    elif "geo" in fourth_label or "code" in fourth_label:
+        value_kind = "geo"
+    else:
+        value_kind = None
+    return lambda row: parse_row_case_legal_bid(row, value_kind)
+
+
 def parse_pdf(content: bytes, source_url: str) -> tuple[list[dict], str | None]:
     """Returns (listings, skip_reason). skip_reason is None on success."""
     with pdfplumber.open(BytesIO(content)) as pdf:
         first_page_text = pdf.pages[0].extract_text() or ""
         county, precinct = extract_county(first_page_text)
         if not county:
+            # Some documents never name their county in the running text at
+            # all (a bare "SALES FOR AUGUST 4, 2026" banner) or phrase it in
+            # a way COUNTY_PATTERN doesn't anticipate -- the filename is the
+            # fallback of last resort, see extract_county_from_filename.
+            county, precinct = extract_county_from_filename(source_url)
+        if not county:
             return [], "no county pattern found (likely a city/ISD-specific or non-listing document)"
 
         fmt = None
+        parser = None
         listings = []
 
         for page in pdf.pages:
             for table in page.extract_tables():
                 if not table:
                     continue
+                rows = table
                 if fmt is None:
-                    fmt = detect_format(table[0])
+                    # The real header isn't always row 0 -- a section-title
+                    # banner row (e.g. "Fort Bend Constable Precinct 1") can
+                    # come first, pushing the actual header to row 1. Skip
+                    # everything up through wherever the header actually was
+                    # rather than relying on each parser's own guard clause to
+                    # reject it -- a banner row can slip past that guard (Fort
+                    # Bend's contains a stray digit, from "Precinct 1").
+                    for idx, candidate in enumerate(table[:3]):
+                        fmt = detect_format(candidate)
+                        if fmt:
+                            parser = bind_parser(fmt, candidate)
+                            rows = table[idx + 1:]
+                            break
                     if fmt is None:
                         continue  # keep looking -- this "table" might be a stray box, not the real one
-                for row in table:
-                    parsed = fmt["parser"](row) if fmt else None
+                for row in rows:
+                    parsed = parser(row) if parser else None
                     if parsed:
                         parsed["county"] = county
                         parsed["precinct"] = precinct
