@@ -6,7 +6,55 @@ collin_scraper.py for how this site's data is shaped).
 
 import unittest
 
-from collin_scraper import GEO_PATTERN, extract_address, is_cancelled
+from collin_scraper import GEO_PATTERN, extract_address, is_cancelled, parse_listing_page
+
+# Trimmed from a real response: one normal upcoming row, one cancelled row,
+# and one row dated in the past -- parse_listing_page must keep all three
+# (with is_cancelled set correctly) so collin_archive_scraper.py's
+# historical archive doesn't silently lose cancelled/past sales the way
+# collin_scraper.py's own public-facing filtering deliberately does.
+ACCORDION_HTML = """
+<div class="advListTableWrap accordion-section">
+  <div class="accordion-header">Precinct 2</div>
+  <div class="accordion-content">
+    <div class="advListDataRow">
+      <div class="advListDataCell" data-col="Title">Ancelmo Ordonez</div>
+      <div class="advListDataCell" data-col="Description">TRACT 1: GEO: R276200002001 BEING ALL...</div>
+      <div class="advListDataCell" data-col="Date">7/1/2025</div>
+      <div class="advListDataCell" data-col="Document">
+        <a href="/docs/ordonez.pdf">Ordonez Notice of Constable Sale</a>
+      </div>
+    </div>
+    <div class="advListDataRow">
+      <div class="advListDataCell" data-col="Title">Bradley Haynes - ***Cancelled***</div>
+      <div class="advListDataCell" data-col="Description">Lot 8, Block 15...</div>
+      <div class="advListDataCell" data-col="Date">9/2/2025</div>
+      <div class="advListDataCell" data-col="Document"></div>
+    </div>
+  </div>
+</div>
+"""
+
+
+class ParseListingPageTests(unittest.TestCase):
+    def test_normal_row_is_not_cancelled(self):
+        rows = parse_listing_page(ACCORDION_HTML)
+        ordonez = next(r for r in rows if "Ordonez" in r["account_number"] or r["account_number"] == "R276200002001")
+        self.assertFalse(ordonez["is_cancelled"])
+
+    def test_cancelled_row_is_kept_not_dropped(self):
+        # This is the whole point of the archive scraper reusing this
+        # function -- a cancelled row must survive, just flagged, not be
+        # filtered out the way collin_scraper.py's own main() filters it.
+        rows = parse_listing_page(ACCORDION_HTML)
+        self.assertEqual(len(rows), 2)
+        cancelled = [r for r in rows if r["is_cancelled"]]
+        self.assertEqual(len(cancelled), 1)
+        self.assertIn("Haynes", cancelled[0]["account_number"])
+
+    def test_precinct_captured_per_row(self):
+        rows = parse_listing_page(ACCORDION_HTML)
+        self.assertTrue(all(r["precinct"] == "Precinct 2" for r in rows))
 
 
 class IsCancelledTests(unittest.TestCase):

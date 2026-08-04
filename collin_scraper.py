@@ -91,6 +91,15 @@ def extract_address(legal_description: str) -> str | None:
 
 
 def parse_listing_page(html: str) -> list[dict]:
+    """
+    Every row from the page's full accordion -- past, future, cancelled,
+    all of it -- with an is_cancelled flag rather than dropping any of it
+    here. collin_scraper.py's own main() filters this down to what
+    "Current Sales" would show (upcoming, not cancelled) before it ever
+    touches the public listings table; collin_archive_scraper.py instead
+    keeps everything, since preserving that history is the whole point of
+    the hidden historical_listings table it writes to.
+    """
     soup = BeautifulSoup(html, "html.parser")
     listings = []
 
@@ -113,12 +122,8 @@ def parse_listing_page(html: str) -> list[dict]:
             if not defendant or not sale_date_text:
                 continue
             try:
-                sale_date = datetime.strptime(sale_date_text, "%m/%d/%Y").date()
+                datetime.strptime(sale_date_text, "%m/%d/%Y")
             except ValueError:
-                continue
-            if sale_date < date.today():
-                continue
-            if is_cancelled(defendant, legal_description):
                 continue
 
             geo_match = GEO_PATTERN.findall(legal_description)
@@ -128,6 +133,7 @@ def parse_listing_page(html: str) -> list[dict]:
                 "precinct": precinct,
                 "account_number": account_number,
                 "sale_date": sale_date_text,
+                "is_cancelled": is_cancelled(defendant, legal_description),
                 "legal_description": legal_description,
                 "address": extract_address(legal_description),
                 "pdf_url": urljoin(BASE_URL, link["href"]) if link and link.get("href") else None,
@@ -215,7 +221,11 @@ def main():
     resp = session.get(LISTING_PAGE_URL, headers=HEADERS, timeout=30)
     resp.raise_for_status()
 
-    listings = parse_listing_page(resp.text)
+    all_listings = parse_listing_page(resp.text)
+    listings = [
+        l for l in all_listings
+        if not l["is_cancelled"] and datetime.strptime(l["sale_date"], "%m/%d/%Y").date() >= date.today()
+    ]
     print(f"Found {len(listings)} upcoming, non-cancelled sale(s).")
 
     conn = sqlite3.connect(DB_PATH)

@@ -80,6 +80,13 @@ def main():
     for scraper in SCRAPERS:
         run_step(project_dir, run_started_at, scraper)
 
+    # Not in SCRAPERS above -- it writes to historical_listings, a separate,
+    # hidden table web.py never queries, not the public listings table every
+    # other scraper feeds. Still tracked here so a broken archive run shows
+    # up on the bell's pass/fail count like everything else, same reasoning
+    # as geocode_backfill.py below.
+    run_step(project_dir, run_started_at, "collin_archive_scraper.py")
+
     # Runs last, once, against whatever addresses today's scrapers just
     # added -- not its own scraper, so it isn't in SCRAPERS above, but it's
     # tracked the same way so a broken geocoder shows up on the bell too.

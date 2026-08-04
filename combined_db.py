@@ -165,6 +165,42 @@ def init_db(conn: PgConnection):
             generated_at TEXT NOT NULL
         )
     """)
+    # A research-only archive of historical sale notices -- distinct from
+    # `listings` above in both purpose and shape. `listings` represents
+    # current, actionable state (one row per property, upserted in place
+    # every run) and is what web.py serves publicly; this table instead
+    # keeps every distinct sale event a source's own archive exposes,
+    # including past and cancelled ones, for whatever county's site
+    # actually publishes that kind of history (Collin County's constable
+    # sale notices go back years, unlike every other current-listings-only
+    # source here). Deliberately never queried by web.py or exposed on the
+    # site -- purely for internal research. Keyed on (county,
+    # account_number, sale_date) rather than just (county, account_number)
+    # since the same property can legitimately recur at more than one sale
+    # date over time, and each is a distinct historical event worth keeping,
+    # not a duplicate to collapse.
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS historical_listings (
+            id SERIAL PRIMARY KEY,
+            county TEXT NOT NULL,
+            account_number TEXT NOT NULL,
+            precinct TEXT,
+            sale_date TEXT,
+            is_cancelled BOOLEAN,
+            minimum_bid TEXT,
+            address TEXT,
+            description TEXT,
+            source TEXT,
+            source_url TEXT,
+            first_seen TEXT,
+            last_seen TEXT
+        )
+    """)
+    conn.execute("""
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_historical_county_account_date
+        ON historical_listings(county, account_number, sale_date)
+    """)
+
     conn.commit()
 
 
@@ -304,6 +340,53 @@ def upsert_listing(
             county, account_number, precinct, minimum_bid, estimated_value,
             address, description, status, source, source_url, latitude,
             longitude, now, now,
+        ),
+    )
+    if commit:
+        conn.commit()
+
+
+def upsert_historical_listing(
+    conn: PgConnection,
+    county: str,
+    account_number: str | None,
+    precinct: str | None,
+    sale_date: str | None,
+    is_cancelled: bool,
+    minimum_bid: str | None,
+    address: str | None,
+    description: str | None,
+    source: str,
+    source_url: str | None = None,
+    commit: bool = True,
+):
+    """Same upsert shape as upsert_listing, but into historical_listings --
+    see that table's own comment in init_db for why this is a separate
+    table and key rather than reusing `listings`."""
+    if not account_number:
+        return  # can't track/dedupe a record without a stable identifier
+
+    now = datetime.now(timezone.utc).isoformat()
+    conn.execute(
+        """
+        INSERT INTO historical_listings (
+            county, account_number, precinct, sale_date, is_cancelled,
+            minimum_bid, address, description, source, source_url,
+            first_seen, last_seen
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT (county, account_number, sale_date) DO UPDATE SET
+            precinct = EXCLUDED.precinct,
+            is_cancelled = EXCLUDED.is_cancelled,
+            minimum_bid = EXCLUDED.minimum_bid,
+            address = EXCLUDED.address,
+            description = EXCLUDED.description,
+            source = EXCLUDED.source,
+            source_url = EXCLUDED.source_url,
+            last_seen = EXCLUDED.last_seen
+        """,
+        (
+            county, account_number, precinct, sale_date, is_cancelled,
+            minimum_bid, address, description, source, source_url, now, now,
         ),
     )
     if commit:
