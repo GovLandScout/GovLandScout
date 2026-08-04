@@ -1,12 +1,14 @@
 """
 GovLandScout - Web viewer
 
-FastAPI app that serves every scraped listing across all three sources
-(hctax_scraper.py, lgbs_scraper.py, gsa_scraper.py) via combined_db.py.
-Listings with a real equity calculation are ranked first; listings
-missing pricing data (or with no independent value estimate at all, like
-the GSA federal auctions) are shown afterward with "No data available"
-in place of the fields that don't apply, rather than being hidden.
+FastAPI app that serves every scraped listing across all of this
+project's sources via combined_db.py. The table's default order is
+randomized client-side on each page load (see shuffleInPlace() below) --
+a visitor can still sort by equity, estimated value, or minimum bid via
+the "Sort by" control. Listings missing pricing data (or with no
+independent value estimate at all, like the GSA federal auctions) show
+"No data available" in place of the fields that don't apply, rather than
+being hidden.
 
 Rows are NOT pre-rendered as HTML server-side -- with 4,000+ listings
 that meant shipping a multi-megabyte page and building tens of thousands
@@ -633,8 +635,7 @@ def deals_page():
 
     body = f"""
       <h1>GovLandScout - Texan's Distressed Property Finder</h1>
-      <p class="subtitle">GovLandScout is a project attempting to show a state-wide listing of all property being sold by the government+, to try to help Texan's combat rising home prices and a lack of housing affordability. {total_count} total listings across all sources. {priced_count} have a full equity calculation and are
-         ranked first below; the rest are shown afterward with "{NO_DATA}" where a field doesn't apply.</p>
+      <p class="subtitle">GovLandScout is a project attempting to show a state-wide listing of all property being sold by the government+, to try to help Texan's combat rising home prices and a lack of housing affordability. {total_count} total listings across all sources, shown below in random order -- use "Sort by" to rank by equity, estimated value, or minimum bid instead. {priced_count} have a full equity calculation; listings without one still show, just with "{NO_DATA}" where a field doesn't apply.</p>
 
       <div class="controls card">
         <div class="control">
@@ -655,10 +656,15 @@ def deals_page():
         </div>
 
         <div class="control">
-          <label for="equitySort">Sort by equity</label>
-          <select id="equitySort" onchange="applySort()">
-            <option value="desc">Highest to lowest (default)</option>
-            <option value="asc">Lowest to highest</option>
+          <label for="sortOption">Sort by</label>
+          <select id="sortOption" onchange="applySort()">
+            <option value="none">Default (random)</option>
+            <option value="equity_desc">Equity: highest to lowest</option>
+            <option value="equity_asc">Equity: lowest to highest</option>
+            <option value="estimated_value_asc">Estimated value: lowest to highest</option>
+            <option value="estimated_value_desc">Estimated value: highest to lowest</option>
+            <option value="minimum_bid_asc">Minimum bid: lowest to highest</option>
+            <option value="minimum_bid_desc">Minimum bid: highest to lowest</option>
           </select>
         </div>
 
@@ -738,7 +744,22 @@ def deals_page():
           links: l => !l.source_url && !l.maps_url,
         }};
 
-        const ALL_LISTINGS = JSON.parse(document.getElementById('listingsData').textContent);
+        function shuffleInPlace(arr) {{
+          // Fisher-Yates -- every listing an equally likely first impression
+          // rather than always leading with whatever the DB happens to
+          // return first. Runs once per page load, not on every applyFilters()
+          // call -- re-shuffling on every keystroke in the location filter
+          // would make the list jump around while someone's mid-search,
+          // which "Default (random)" reordering itself on every filter
+          // tweak would do if this ran there instead.
+          for (let i = arr.length - 1; i > 0; i--) {{
+            const j = Math.floor(Math.random() * (i + 1));
+            [arr[i], arr[j]] = [arr[j], arr[i]];
+          }}
+          return arr;
+        }}
+
+        const ALL_LISTINGS = shuffleInPlace(JSON.parse(document.getElementById('listingsData').textContent));
         let filteredListings = [];
         let currentPage = 1;
 
@@ -1043,14 +1064,31 @@ def deals_page():
           document.getElementById('dealsTable').scrollIntoView({{ behavior: 'smooth', block: 'start' }});
         }}
 
-        function sortListings(arr, dir) {{
+        // Getter per sortable field -- "equity" sorts by equity_pct (a
+        // percentage, comparable across wildly different price scales) not
+        // the raw dollar equity figure, same metric the old equity-only
+        // sort always used.
+        const SORT_OPTIONS = {{
+          equity_desc: {{ get: l => l.equity_pct, dir: 'desc' }},
+          equity_asc: {{ get: l => l.equity_pct, dir: 'asc' }},
+          estimated_value_desc: {{ get: l => l.estimated_value, dir: 'desc' }},
+          estimated_value_asc: {{ get: l => l.estimated_value, dir: 'asc' }},
+          minimum_bid_desc: {{ get: l => l.minimum_bid, dir: 'desc' }},
+          minimum_bid_asc: {{ get: l => l.minimum_bid, dir: 'asc' }},
+        }};
+
+        function sortListings(arr, sortOption) {{
+          const config = SORT_OPTIONS[sortOption];
+          if (!config) return arr;  // 'none' -- leave the already-randomized order alone
           return arr.slice().sort((a, b) => {{
-            const aHas = a.equity_pct != null;
-            const bHas = b.equity_pct != null;
+            const aVal = config.get(a);
+            const bVal = config.get(b);
+            const aHas = aVal != null;
+            const bHas = bVal != null;
             if (aHas && !bHas) return -1;
             if (!aHas && bHas) return 1;
             if (!aHas && !bHas) return 0;
-            return dir === 'asc' ? a.equity_pct - b.equity_pct : b.equity_pct - a.equity_pct;
+            return config.dir === 'asc' ? aVal - bVal : bVal - aVal;
           }});
         }}
 
@@ -1083,8 +1121,8 @@ def deals_page():
             return true;
           }});
 
-          const dir = document.getElementById('equitySort').value;
-          filteredListings = sortListings(filteredListings, dir);
+          const sortOption = document.getElementById('sortOption').value;
+          filteredListings = sortListings(filteredListings, sortOption);
 
           currentPage = 1;
           document.getElementById('resultSummary').textContent =
@@ -1101,7 +1139,7 @@ def deals_page():
           document.getElementById('locationFilter').value = '';
           document.getElementById('minValue').value = VALUE_MIN;
           document.getElementById('maxValue').value = VALUE_MAX;
-          document.getElementById('equitySort').value = 'desc';
+          document.getElementById('sortOption').value = 'none';
           document.querySelectorAll('.missingFilter').forEach(cb => {{ cb.checked = false; }});
           document.getElementById('bookmarkedOnly').checked = false;  // clears the filter, not the saved bookmarks themselves
           applyFilters();
