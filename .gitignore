@@ -4,3 +4,6 @@ __pycache__/
 *.db
 .env
 thumbnail_cache/
+model/data/
+model/venv/
+model/*.joblib
