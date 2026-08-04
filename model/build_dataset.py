@@ -21,6 +21,7 @@ import pandas as pd
 DATA_DIR = Path(__file__).parent / "data"
 
 LOOKBACK_MONTHS = 6  # a county needs this much history before its rows are usable as training examples
+TARGET_HORIZONS = [1, 3, 6]  # months ahead -- see engineer_features()'s target comment
 
 
 def load_wide_zillow(filename: str, value_name: str) -> pd.DataFrame:
@@ -58,10 +59,22 @@ def engineer_features(panel: pd.DataFrame) -> pd.DataFrame:
     for county, group in panel.groupby("RegionName"):
         g = group.sort_values("year_month").copy()
 
-        # Target: next month's price-cut share -- what the model is
-        # actually trying to predict. The last row of every county has
-        # no "next month" yet, dropped below.
-        g["target_next_price_cut_pct"] = g["price_cut_pct"].shift(-1)
+        # Targets: *change* in price-cut share over the next H months, not
+        # the raw next-month level. Predicting the level let a model just
+        # copy this month's value forward and call it a prediction --
+        # price_cut_pct is highly autocorrelated month to month, so that
+        # alone got most of the way to a good-looking score without
+        # actually explaining any movement. Predicting change removes that
+        # shortcut: naive "predict zero change" is the honest baseline now,
+        # and doing better than it means a horizon's features are actually
+        # carrying signal about which direction things are headed.
+        #
+        # Three horizons rather than one so short vs. longer-term dynamics
+        # can be compared directly -- current momentum is expected to
+        # matter more at 1 month, macro trends (unemployment, ZHVI) more at
+        # 6, and train_model.py reports both instead of assuming either.
+        for horizon in TARGET_HORIZONS:
+            g[f"target_change_{horizon}m"] = g["price_cut_pct"].shift(-horizon) - g["price_cut_pct"]
 
         g["price_cut_pct_lag1"] = g["price_cut_pct"].shift(1)
         g["price_cut_pct_lag3"] = g["price_cut_pct"].shift(3)
@@ -88,13 +101,17 @@ def engineer_features(panel: pd.DataFrame) -> pd.DataFrame:
         "price_cut_pct_roll3", "zhvi_mom_pct", "zhvi_yoy_pct", "inventory_mom_pct",
         "inventory_level", "unemployment_rate", "unemployment_rate_mom_change", "month_of_year",
     ]
-    keep_cols = ["county", "year_month", "target_next_price_cut_pct"] + feature_cols
+    target_cols = [f"target_change_{h}m" for h in TARGET_HORIZONS]
+    keep_cols = ["county", "year_month"] + target_cols + feature_cols
 
-    # A row is only usable once every feature and the target are actually
-    # present -- mostly the first LOOKBACK_MONTHS of each county (not
-    # enough history for the lag/rolling features yet) and the last row
-    # of each county (no next month to form the target from).
-    clean = full[keep_cols].dropna()
+    # Every feature has to be present -- mostly the first LOOKBACK_MONTHS
+    # of each county, not enough history yet for the lag/rolling features.
+    # Targets are handled separately: the 6-month target needs 6 more
+    # months of future data than the 1-month one does, so requiring all
+    # three at once would drop rows near the end of each county's series
+    # that are perfectly usable for the shorter horizons. train_model.py
+    # drops NaNs on whichever single target column it's training against.
+    clean = full[keep_cols].dropna(subset=feature_cols)
     return clean
 
 

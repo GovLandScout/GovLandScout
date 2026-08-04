@@ -11,10 +11,13 @@ not the live site).
 
 ## Scope (Phase 1)
 
-- **Target**: next month's `perc_listings_price_cut` (% of a county's
-  active listings that took a price cut) -- the closest thing Zillow
-  publishes to a direct distress signal, vs. ZHVI which just tracks
-  price level.
+- **Target**: *change* in `perc_listings_price_cut` (% of a county's
+  active listings that took a price cut) over the next 1, 3, and 6
+  months -- not the raw next-period level. An earlier version predicted
+  the level directly and the model mostly just learned to copy this
+  month's value forward, since price_cut_pct is highly autocorrelated;
+  predicting change forces it to actually explain movement instead (see
+  Results below).
 - **Geography**: Texas counties Zillow has price-cut data for (208 of
   254).
 - **Features**: lagged/rolling price-cut history, ZHVI trend
@@ -41,9 +44,10 @@ not the live site).
 2. `build_dataset.py` -- joins all of it into one county-month panel,
    engineers the lagged/rolling features described above, and writes
    `data/county_month_dataset.csv`.
-3. `train_model.py` -- time-based train/test split, trains the random
-   forest, reports RMSE/MAE against the naive baseline, and prints
-   feature importances.
+3. `train_model.py` -- time-based train/test split, trains a separate
+   random forest per horizon (1/3/6 months), reports RMSE/MAE against a
+   "predict zero change" baseline for each, and prints feature
+   importances per horizon.
 
 ## Running it
 
@@ -56,30 +60,55 @@ python3 build_dataset.py
 python3 train_model.py
 ```
 
-## Results (first run, 2026-08-04)
+## Results (reframed to predict change, 2026-08-04)
 
-207 TX counties, 15,362 county-month training examples spanning 2019-03
-through 2026-05. Time-based split: trained through 2024-10, evaluated on
-everything from 2024-11 onward (3,369 rows, 202 counties) -- months the
-model never saw during training.
+207 TX counties, ~15,500 county-month training examples spanning 2019-03
+through 2026-06 (the exact usable row count differs slightly per
+horizon -- a 6-month-ahead target needs 6 more months of future data to
+exist than a 1-month one does, so the last few months of each county's
+series drop out of the 6-month set but stay usable for 1-month). Same
+time-based split as before: trained through the same ~80% cutoff,
+evaluated on the trailing 20% of months the model never saw.
 
-| | RMSE | MAE |
-|---|---|---|
-| Naive baseline (predict no change) | 0.022 | 0.017 |
-| Random forest | 0.019 | 0.014 |
+| Horizon | Naive MAE (predict zero change) | Random forest MAE | Improvement |
+|---|---|---|---|
+| 1 month | 0.0169 | 0.0134 | 20.7% |
+| 3 months | 0.0390 | 0.0228 | 41.6% |
+| 6 months | 0.0498 | 0.0276 | 44.6% |
 
-**18% lower MAE than the naive baseline** on genuinely unseen months --
-a real, if modest, improvement, not a wash.
+The reframing did what it was meant to: the model now clearly beats
+"nothing's going to change" at every horizon, and by a lot more than the
+old level-based framing's 18% -- because "predict zero change" is a much
+weaker baseline than "predict this month's level" was (real counties do
+drift over 3-6 months, so naive persistence gets worse the further out
+you go, leaving more real room for a model to add value).
 
-Feature importances were lopsided: `price_cut_pct` (this month's own
-value) alone accounted for 93% of the model's decisions, `month_of_year`
-another 3%, and every other feature -- inventory trend, unemployment
-trend, ZHVI trend, longer lags -- split the remaining ~4%. Read plainly:
-at the monthly county level, *current momentum* is what actually carries
-predictive power right now; the macro features add only a small marginal
-edge on top of it in this framing. That's a legitimate, useful finding
-on its own (it says where the signal is, not just whether the model
-"worked"), and it's a natural place to push on next -- e.g. reframing
-the target as month-over-month *change* rather than the level itself,
-which would force the model to explain movement instead of being able
-to mostly coast on autocorrelation.
+Feature importances also shifted in an interesting, economically
+sensible way once the trivial "just copy the level" shortcut was
+removed:
+
+- **`month_of_year` (seasonality) is now the single dominant feature at
+  every horizon (41-44%)** -- price-cut behavior has a real, learnable
+  seasonal pattern (fewer cuts during the spring buying season, more
+  once it cools off) that was completely masked before by the model
+  being able to just copy the current level forward instead.
+- **`zhvi_yoy_pct` (year-over-year home value trend) grows steadily
+  with horizon**: 5.9% importance at 1 month -> 10.6% at 3 -> 15.4% at
+  6. That's exactly the pattern you'd expect if short-term price-cut
+  movement is noisy/seasonal while longer-term movement is increasingly
+  explained by the broader home-value trend actually having time to
+  play out.
+- `price_cut_pct` itself (current level, now just one input among many
+  rather than the target) shows the same growing-with-horizon pattern
+  (5.5% -> 15.8% -> 16.6%) -- plausible mean-reversion: an unusually
+  high current price-cut share is more informative about where things
+  end up several months out than it is about next month specifically.
+- Unemployment features stay modest and fairly flat across horizons --
+  no clear signal that they matter more or less at longer range, at
+  least not at the county level with this feature set.
+
+Next natural step: GovLandScout's own scraped listing history is now
+about a month old. Once it has enough months behind it to compute
+county-level rolling features from (mirroring what this model already
+does with Zillow's price-cut data), it becomes a candidate to fold in
+as an additional feature -- or, further out, a target in its own right.
