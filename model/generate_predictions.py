@@ -4,7 +4,10 @@ GovLandScout model (Phase 1) - Generate current predictions
 Runs the three trained horizon models (see train_model.py) against each
 county's most recent usable row to produce "here's what the model
 currently expects for this county over the next 1/3/6 months," and
-writes it to public/county_predictions.json.
+writes it to public/county_predictions.json -- along with an
+uncertainty estimate per prediction and each county's recent price-cut
+history, both added specifically so /market-trends can show more than
+a single bare number per county (see web.py's market_trends_page()).
 
 That file -- not this script, and not the trained .joblib models it
 depends on -- is what web.py actually reads. web.py's own environment
@@ -21,11 +24,13 @@ import json
 from pathlib import Path
 
 import joblib
+import numpy as np
 import pandas as pd
 
 DATA_DIR = Path(__file__).parent / "data"
 PUBLIC_DIR = Path(__file__).parent / "public"
 TARGET_HORIZONS = [1, 3, 6]
+HISTORY_MONTHS = 24  # how much trailing history to ship per county for the drill-down chart
 
 FEATURE_COLS = [
     "price_cut_pct", "price_cut_pct_lag1", "price_cut_pct_lag3", "price_cut_pct_lag6",
@@ -41,8 +46,6 @@ COUNTY_NAME_OVERRIDES = {"De Witt County": "DeWitt County"}
 
 
 def latest_row_per_county(dataset: pd.DataFrame) -> pd.DataFrame:
-    dataset = dataset.copy()
-    dataset["year_month"] = pd.PeriodIndex(dataset["year_month"], freq="M")
     # Only need the features to be present -- the target columns don't
     # matter here, there's nothing to predict *against* for the current
     # month, only forward from it.
@@ -51,17 +54,48 @@ def latest_row_per_county(dataset: pd.DataFrame) -> pd.DataFrame:
     return usable.loc[latest_idx].reset_index(drop=True)
 
 
+def predict_with_uncertainty(model, X: pd.DataFrame) -> tuple[np.ndarray, np.ndarray]:
+    """Mean prediction (what model.predict() already gives) plus the
+    standard deviation across the forest's individual trees -- a real,
+    (almost) free uncertainty estimate a single-model forecast doesn't
+    have on its own. Trees that broadly agree imply a more reliable
+    prediction than trees that are all over the place for that row."""
+    # .values, not the DataFrame itself -- each tree was fit as part of the
+    # ensemble without its own column-name tracking, and predicting from a
+    # named DataFrame directly against it is a harmless but noisy mismatch
+    # sklearn warns about on every single tree otherwise.
+    X_values = X.values
+    tree_predictions = np.array([tree.predict(X_values) for tree in model.estimators_])
+    return tree_predictions.mean(axis=0), tree_predictions.std(axis=0)
+
+
+def recent_history_by_county(dataset: pd.DataFrame) -> dict[str, list[list]]:
+    history = {}
+    for county, group in dataset.groupby("county"):
+        recent = group.sort_values("year_month").tail(HISTORY_MONTHS)
+        history[county] = [
+            [str(row["year_month"]), round(float(row["price_cut_pct"]), 4)]
+            for _, row in recent.iterrows()
+        ]
+    return history
+
+
 def main():
     dataset = pd.read_csv(DATA_DIR / "county_month_dataset.csv")
+    dataset["year_month"] = pd.PeriodIndex(dataset["year_month"], freq="M")
+
     latest = latest_row_per_county(dataset)
     print(f"{len(latest)} counties with a usable current row.")
+
+    history = recent_history_by_county(dataset)
 
     predictions = {}
     for horizon in TARGET_HORIZONS:
         model = joblib.load(Path(__file__).parent / f"county_distress_model_{horizon}m.joblib")
-        preds = model.predict(latest[FEATURE_COLS])
-        for county, pred in zip(latest["county"], preds):
-            predictions.setdefault(county, {})[f"change_{horizon}m"] = round(float(pred), 4)
+        means, stds = predict_with_uncertainty(model, latest[FEATURE_COLS])
+        for county, mean, std in zip(latest["county"], means, stds):
+            predictions.setdefault(county, {})[f"change_{horizon}m"] = round(float(mean), 4)
+            predictions[county][f"change_{horizon}m_std"] = round(float(std), 4)
 
     output = []
     for _, row in latest.iterrows():
@@ -70,12 +104,13 @@ def main():
             "county": COUNTY_NAME_OVERRIDES.get(county, county),
             "as_of": str(row["year_month"]),
             "current_price_cut_pct": round(float(row["price_cut_pct"]), 4),
+            "history": history.get(county, []),
             **predictions[county],
         })
 
     dest = PUBLIC_DIR / "county_predictions.json"
     dest.write_text(json.dumps(output, indent=None, separators=(",", ":")))
-    print(f"Wrote {len(output)} counties' predictions to {dest}")
+    print(f"Wrote {len(output)} counties' predictions to {dest} ({dest.stat().st_size / 1024:.0f} KB)")
 
 
 if __name__ == "__main__":

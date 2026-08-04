@@ -1189,6 +1189,10 @@ def market_trends_page():
       <div id="trendsMapContainer" class="card" style="height: 560px; margin-bottom: 1.25rem; overflow: hidden;"></div>
       <div id="trendsLegend" class="card" style="padding: 1rem 1.25rem; margin-bottom: 1.5rem; font-size: 0.85rem; color: #475569;"></div>
 
+      <div id="countyDetailPanel" class="card" style="padding: 1.5rem 1.75rem; margin-bottom: 1.5rem;">
+        <p style="color:#64748b; margin:0;">Click a county on the map to see its price-cut history and the model's projection.</p>
+      </div>
+
       <div class="card prose" style="padding: 1.5rem 1.75rem;">
         <h2>What this actually is</h2>
         <p>This map has nothing to do with the property listings elsewhere on this site -- it's a separate research project applying a machine learning model to county-level housing market data, built to explore whether historical patterns in price cuts, home values, inventory, and unemployment can predict where distress is headed next. It is <b>not</b> derived from GovLandScout's own scraped listings (that history is only a few weeks old, nowhere near enough to train on), it is <b>not</b> validated for real investment, policy, or funding decisions, and a county shaded red is not a claim that specific properties there are about to become distressed -- it's a county-level statistical tendency, evaluated on historical data the model wasn't trained on but still just a model, with real, measured error (see the writeup below).</p>
@@ -1216,6 +1220,7 @@ def market_trends_page():
         }}).addTo(trendsMap);
 
         let choroplethLayer = null;
+        let selectedCounty = null;
 
         // Red = the model expects a *higher* price-cut share (more distress);
         // green = lower (easing). Scaled to the current horizon's own actual
@@ -1231,12 +1236,81 @@ def market_trends_page():
           return `rgb(${{rgb.join(',')}})`;
         }}
 
+        // A random forest's per-tree spread is a real uncertainty estimate
+        // (see generate_predictions.py's predict_with_uncertainty), not
+        // decoration -- counties where the trees broadly disagree get faded
+        // out rather than shown with the same confident-looking fill as
+        // ones the model is actually consistent about.
+        function confidenceOpacity(std, maxStd) {{
+          if (std == null || !maxStd) return 0.75;
+          const uncertainty = Math.max(0, Math.min(1, std / maxStd));
+          return 0.75 - 0.45 * uncertainty;  // ranges 0.30 (least confident) to 0.75 (most)
+        }}
+
+        function buildTrendSvg(history, projectedValue) {{
+          const width = 560, height = 150, pad = 28;
+          const allValues = history.map(h => h[1]).concat([projectedValue]);
+          const minV = Math.min(...allValues), maxV = Math.max(...allValues);
+          const range = (maxV - minV) || 0.01;
+          const n = history.length;
+
+          const xAt = i => pad + (i / n) * (width - 2 * pad);
+          const yAt = v => height - pad - ((v - minV) / range) * (height - 2 * pad);
+
+          const points = history.map((h, i) => `${{xAt(i)}},${{yAt(h[1])}}`).join(' ');
+          const lastX = xAt(n - 1), lastY = yAt(history[n - 1][1]);
+          const projX = xAt(n), projY = yAt(projectedValue);
+
+          return `<svg viewBox="0 0 ${{width}} ${{height}}" style="width:100%;height:${{height}}px;">
+            <polyline points="${{points}}" fill="none" stroke="#334155" stroke-width="2" />
+            <line x1="${{lastX}}" y1="${{lastY}}" x2="${{projX}}" y2="${{projY}}"
+                  stroke="#b91c1c" stroke-width="2" stroke-dasharray="5,4" />
+            <circle cx="${{lastX}}" cy="${{lastY}}" r="3" fill="#334155" />
+            <circle cx="${{projX}}" cy="${{projY}}" r="4" fill="#b91c1c" />
+            <text x="${{pad}}" y="${{height - 6}}" font-size="11" fill="#64748b">${{history[0][0]}}</text>
+            <text x="${{width - pad}}" y="${{height - 6}}" font-size="11" fill="#64748b" text-anchor="end">projected</text>
+          </svg>`;
+        }}
+
+        function showCountyDetail(row) {{
+          selectedCounty = row.county;
+          const horizon = document.getElementById('horizonSelect').value;
+          const horizonLabel = document.getElementById('horizonSelect').selectedOptions[0].textContent;
+          const panel = document.getElementById('countyDetailPanel');
+
+          if (!row.history || !row.history.length || row[horizon] == null) {{
+            panel.innerHTML = `<b>${{row.county}}</b><p style="color:#64748b;">Not enough history to chart.</p>`;
+            return;
+          }}
+
+          const projectedValue = row.current_price_cut_pct + row[horizon];
+          const std = row[horizon + '_std'];
+          const sign = row[horizon] > 0 ? '+' : '';
+
+          panel.innerHTML = `
+            <h3 style="margin-top:0;">${{row.county}}</h3>
+            <p style="margin: 0 0 0.75rem;">
+              Current price-cut share: <b>${{(row.current_price_cut_pct * 100).toFixed(1)}}%</b>
+              &middot; Model's ${{horizonLabel}} projection:
+              <b>${{sign}}${{(row[horizon] * 100).toFixed(1)}} points</b>
+              ${{std != null ? `(&plusmn;${{(std * 100).toFixed(1)}} points across the forest's individual trees)` : ''}}
+            </p>
+            ${{buildTrendSvg(row.history, projectedValue)}}
+            <p style="margin: 0.5rem 0 0; font-size: 0.8rem; color: #64748b;">
+              Solid line: actual monthly price-cut share, last ${{row.history.length}} months.
+              Dashed line: the model's projected value ${{horizonLabel.toLowerCase()}}, not another observed month.
+            </p>
+          `;
+        }}
+
         function renderChoropleth() {{
           const horizon = document.getElementById('horizonSelect').value;
           const horizonLabel = document.getElementById('horizonSelect').selectedOptions[0].textContent;
 
           const values = COUNTY_PREDICTIONS.map(r => r[horizon]).filter(v => v != null);
           const maxAbs = Math.max(...values.map(Math.abs));
+          const stds = COUNTY_PREDICTIONS.map(r => r[horizon + '_std']).filter(v => v != null);
+          const maxStd = Math.max(...stds);
 
           if (choroplethLayer) trendsMap.removeLayer(choroplethLayer);
 
@@ -1245,7 +1319,7 @@ def market_trends_page():
               const row = PREDICTIONS_BY_COUNTY[feature.properties.name];
               return {{
                 fillColor: row ? distressColor(row[horizon], maxAbs) : '#f8fafc',
-                fillOpacity: 0.75,
+                fillOpacity: row ? confidenceOpacity(row[horizon + '_std'], maxStd) : 0.4,
                 color: '#94a3b8',
                 weight: 1,
               }};
@@ -1258,19 +1332,30 @@ def market_trends_page():
               }}
               const pct = (row[horizon] * 100).toFixed(1);
               const sign = row[horizon] > 0 ? '+' : '';
+              const std = row[horizon + '_std'];
               layer.bindTooltip(
                 `<b>${{feature.properties.name}}</b><br>`
                 + `Current price-cut share: ${{(row.current_price_cut_pct * 100).toFixed(1)}}%<br>`
-                + `Predicted change (${{horizonLabel}}): ${{sign}}${{pct}} points<br>`
-                + `<span style="color:#64748b">as of ${{row.as_of}}</span>`
+                + `Predicted change (${{horizonLabel}}): ${{sign}}${{pct}} points`
+                + `${{std != null ? ` (&plusmn;${{(std * 100).toFixed(1)}})` : ''}}<br>`
+                + `<span style="color:#64748b">as of ${{row.as_of}} -- click for trend chart</span>`
               );
+              layer.on('click', () => showCountyDetail(row));
             }},
           }}).addTo(trendsMap);
 
           document.getElementById('trendsLegend').innerHTML =
             `<b>${{horizonLabel}}</b> -- darker red: more price cuts expected (rising distress) &middot; `
             + `darker green: fewer expected (easing) &middot; gray: no model data for that county. `
+            + `Faded fill: the model's individual trees disagree more for that county, i.e. lower confidence. `
             + `Scale is relative to this horizon's own range (&plusmn;${{(maxAbs * 100).toFixed(1)}} points at the extremes).`;
+
+          // Keep the detail panel in sync if a county's already selected
+          // and the visitor just switched horizons, instead of leaving it
+          // showing a stale prediction for the old one.
+          if (selectedCounty && PREDICTIONS_BY_COUNTY[selectedCounty]) {{
+            showCountyDetail(PREDICTIONS_BY_COUNTY[selectedCounty]);
+          }}
         }}
 
         renderChoropleth();
