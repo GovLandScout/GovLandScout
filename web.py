@@ -63,6 +63,20 @@ THUMBNAIL_CACHE_CONTROL = "public, max-age=31536000, immutable"
 
 NO_DATA = "No data available"
 
+# model/ is a separate, isolated project (own venv, own dependencies --
+# pandas/scikit-learn are never installed here on Render) that produces
+# these two small static files by hand, not on a schedule -- see
+# model/README.md. Read once at import time rather than per-request:
+# they only change when someone re-runs model/generate_predictions.py
+# and commits the result, not on every page load.
+MODEL_PUBLIC_DIR = Path(__file__).resolve().parent / "model" / "public"
+try:
+    TX_COUNTIES_GEOJSON = (MODEL_PUBLIC_DIR / "tx_counties.geojson").read_text()
+    COUNTY_PREDICTIONS_JSON = (MODEL_PUBLIC_DIR / "county_predictions.json").read_text()
+except FileNotFoundError:
+    TX_COUNTIES_GEOJSON = "null"
+    COUNTY_PREDICTIONS_JSON = "[]"
+
 # Location search matches raw county/address text, which misses listings
 # in a metro's collar counties/suburbs that don't happen to spell out the
 # metro name anywhere (e.g. a Sugar Land or Katy listing has no "Houston"
@@ -450,6 +464,7 @@ TURNSTILE_HEAD = """
 def nav_html(active: str) -> str:
     pages = [
         ("/", "home", "Home"),
+        ("/market-trends", "market-trends", "Market Trends (Experimental)"),
         ("/impact", "impact", "Impact"),
         ("/investment-info", "investment", "Investment Info"),
         ("/manual-upload", "manual-upload", "Manual property uploads"),
@@ -1152,6 +1167,120 @@ def deals_page():
     """
 
     return page_shell("GovLandScout", "home", body, extra_head=LEAFLET_HEAD)
+
+
+@app.get("/market-trends", response_class=HTMLResponse)
+def market_trends_page():
+    body = f"""
+      <h1>Market Trends <span class="manual-badge" title="A research model, not a feature of the property listings above -- see the notes below before reading anything into it">Experimental</span></h1>
+      <p class="subtitle">A random forest model trained on Zillow Research and FRED historical data -- not GovLandScout's own listings -- predicting how each Texas county's share of price-cut listings is likely to move over the next 1, 3, or 6 months. Darker red means the model expects <i>more</i> price cuts (rising distress); darker green means <i>fewer</i> (easing). Counties with no shading don't have enough Zillow history to include yet.</p>
+
+      <div class="card" style="padding: 1.5rem 1.75rem; margin-bottom: 1.5rem;">
+        <div class="control" style="max-width: 20rem;">
+          <label for="horizonSelect">Horizon</label>
+          <select id="horizonSelect" onchange="renderChoropleth()">
+            <option value="change_1m">1 month ahead</option>
+            <option value="change_3m" selected>3 months ahead</option>
+            <option value="change_6m">6 months ahead</option>
+          </select>
+        </div>
+      </div>
+
+      <div id="trendsMapContainer" class="card" style="height: 560px; margin-bottom: 1.25rem; overflow: hidden;"></div>
+      <div id="trendsLegend" class="card" style="padding: 1rem 1.25rem; margin-bottom: 1.5rem; font-size: 0.85rem; color: #475569;"></div>
+
+      <div class="card prose" style="padding: 1.5rem 1.75rem;">
+        <h2>What this actually is</h2>
+        <p>This map has nothing to do with the property listings elsewhere on this site -- it's a separate research project applying a machine learning model to county-level housing market data, built to explore whether historical patterns in price cuts, home values, inventory, and unemployment can predict where distress is headed next. It is <b>not</b> derived from GovLandScout's own scraped listings (that history is only a few weeks old, nowhere near enough to train on), it is <b>not</b> validated for real investment, policy, or funding decisions, and a county shaded red is not a claim that specific properties there are about to become distressed -- it's a county-level statistical tendency, evaluated on historical data the model wasn't trained on but still just a model, with real, measured error (see the writeup below).</p>
+        <p>Full methodology, data sources, and honest results -- including where this model does and doesn't work well -- are written up in
+           <a href="https://github.com/GovLandScout/GovLandScout/tree/main/model" target="_blank" rel="noopener noreferrer">model/README.md</a> in the project's repository.</p>
+      </div>
+
+      <script type="application/json" id="txCountiesGeoJSON">{TX_COUNTIES_GEOJSON}</script>
+      <script type="application/json" id="countyPredictionsData">{COUNTY_PREDICTIONS_JSON}</script>
+
+      <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+              integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+      <script>
+        const TX_COUNTIES = JSON.parse(document.getElementById('txCountiesGeoJSON').textContent);
+        const COUNTY_PREDICTIONS = JSON.parse(document.getElementById('countyPredictionsData').textContent);
+        const PREDICTIONS_BY_COUNTY = {{}};
+        for (const row of COUNTY_PREDICTIONS) {{
+          PREDICTIONS_BY_COUNTY[row.county] = row;
+        }}
+
+        const trendsMap = L.map('trendsMapContainer').setView([31.0, -99.0], 6);
+        L.tileLayer('https://{{s}}.tile.openstreetmap.org/{{z}}/{{x}}/{{y}}.png', {{
+          attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+          maxZoom: 10,
+        }}).addTo(trendsMap);
+
+        let choroplethLayer = null;
+
+        // Red = the model expects a *higher* price-cut share (more distress);
+        // green = lower (easing). Scaled to the current horizon's own actual
+        // range rather than a fixed threshold, since a 6-month change and a
+        // 1-month change aren't on comparable scales.
+        function distressColor(change, maxAbs) {{
+          if (change == null || !maxAbs) return '#e2e8f0';
+          const t = Math.max(-1, Math.min(1, change / maxAbs));
+          const NEUTRAL = [241, 245, 249], RED = [185, 28, 28], GREEN = [21, 128, 61];
+          const to = t >= 0 ? RED : GREEN;
+          const frac = Math.abs(t);
+          const rgb = NEUTRAL.map((c, i) => Math.round(c + (to[i] - c) * frac));
+          return `rgb(${{rgb.join(',')}})`;
+        }}
+
+        function renderChoropleth() {{
+          const horizon = document.getElementById('horizonSelect').value;
+          const horizonLabel = document.getElementById('horizonSelect').selectedOptions[0].textContent;
+
+          const values = COUNTY_PREDICTIONS.map(r => r[horizon]).filter(v => v != null);
+          const maxAbs = Math.max(...values.map(Math.abs));
+
+          if (choroplethLayer) trendsMap.removeLayer(choroplethLayer);
+
+          choroplethLayer = L.geoJSON(TX_COUNTIES, {{
+            style: feature => {{
+              const row = PREDICTIONS_BY_COUNTY[feature.properties.name];
+              return {{
+                fillColor: row ? distressColor(row[horizon], maxAbs) : '#f8fafc',
+                fillOpacity: 0.75,
+                color: '#94a3b8',
+                weight: 1,
+              }};
+            }},
+            onEachFeature: (feature, layer) => {{
+              const row = PREDICTIONS_BY_COUNTY[feature.properties.name];
+              if (!row || row[horizon] == null) {{
+                layer.bindTooltip(`${{feature.properties.name}} -- no data`);
+                return;
+              }}
+              const pct = (row[horizon] * 100).toFixed(1);
+              const sign = row[horizon] > 0 ? '+' : '';
+              layer.bindTooltip(
+                `<b>${{feature.properties.name}}</b><br>`
+                + `Current price-cut share: ${{(row.current_price_cut_pct * 100).toFixed(1)}}%<br>`
+                + `Predicted change (${{horizonLabel}}): ${{sign}}${{pct}} points<br>`
+                + `<span style="color:#64748b">as of ${{row.as_of}}</span>`
+              );
+            }},
+          }}).addTo(trendsMap);
+
+          document.getElementById('trendsLegend').innerHTML =
+            `<b>${{horizonLabel}}</b> -- darker red: more price cuts expected (rising distress) &middot; `
+            + `darker green: fewer expected (easing) &middot; gray: no model data for that county. `
+            + `Scale is relative to this horizon's own range (&plusmn;${{(maxAbs * 100).toFixed(1)}} points at the extremes).`;
+        }}
+
+        renderChoropleth();
+      </script>
+    """
+    extra_head = """
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+          integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="" />
+    """
+    return page_shell("GovLandScout - Market Trends (Experimental)", "market-trends", body, extra_head=extra_head)
 
 
 # Friendly labels for the raw `source` domains stored per listing --
