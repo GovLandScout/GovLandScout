@@ -27,28 +27,36 @@ import combined_db
 
 BATCH_GEOCODE_URL = "https://geocoding.geo.census.gov/geocoder/locations/addressbatch"
 
-# A dangling state token where a city should be -- "E Oak St, Texas 76853"
-# or "Lampasas, Texas" -- means this address never actually named a city at
-# all, just street + state(+zip). Treated as no city rather than guessed at.
-DANGLING_STATE_PATTERN = re.compile(r"^(texas|tx)\b", re.IGNORECASE)
 
-
-def fetch_ungeocoded(conn: combined_db.PgConnection) -> list[tuple[str, str, str]]:
-    """(county, account_number, address) for listings with an address but no coordinates."""
+def fetch_ungeocoded(conn: combined_db.PgConnection) -> list[tuple[str, str, str, str]]:
+    """(county, account_number, address, state) for listings with an address but no coordinates."""
     rows = conn.execute("""
-        SELECT county, account_number, address FROM listings
+        SELECT county, account_number, address, state FROM listings
         WHERE latitude IS NULL AND address IS NOT NULL AND address != ''
     """).fetchall()
-    return [(r[0], r[1], r[2]) for r in rows]
+    return [(r[0], r[1], r[2], r[3]) for r in rows]
 
 
-def parse_address(address: str, county_fallback: str | None = None) -> tuple[str, str, str, str] | None:
+# Matches DANGLING_STATE_PATTERN's job but per-state: a dangling state name
+# with no real city ("<street>, Pennsylvania <zip>"). Extend this alongside
+# STATE_NAMES below if a source's addresses start spelling out a state this
+# doesn't yet cover.
+STATE_NAMES = {"TX": "texas", "PA": "pennsylvania"}
+
+
+def parse_address(
+    address: str, state: str, county_fallback: str | None = None
+) -> tuple[str, str, str, str] | None:
     """
-    Addresses are usually formatted "<street>, <city>, TX <zip>" -- split
+    Addresses are usually formatted "<street>, <city>, ST <zip>" -- split
     into the street/city/state/zip fields the batch geocoder expects.
-    Increasingly permissive as information gets scarcer, since the batch
-    geocoder accepts a blank zip and a real street can often still be
-    resolved without one:
+    `state` is the listing's own state (see combined_db.py's `state` column)
+    -- geocoding every listing against Texas regardless of where it actually
+    is silently produced wrong or missing coordinates for the first
+    non-Texas source (Pennsylvania's GovEase counties). Increasingly
+    permissive as information gets scarcer, since the batch geocoder
+    accepts a blank zip and a real street can often still be resolved
+    without one:
 
       - 3+ comma segments: zip is whatever digits are in the 3rd segment,
         blank if there aren't any (e.g. MVBA addresses ending "..., Bastrop,
@@ -72,10 +80,15 @@ def parse_address(address: str, county_fallback: str | None = None) -> tuple[str
         return None
     street = parts[0]
 
+    dangling_pattern = re.compile(
+        rf"^({re.escape(STATE_NAMES.get(state, state.lower()))}|{re.escape(state.lower())})\b",
+        re.IGNORECASE,
+    )
+
     if len(parts) >= 2:
         city = parts[1]
-        if DANGLING_STATE_PATTERN.match(city):
-            return None  # "<street>, Texas[ zip]" -- no real city was ever given
+        if dangling_pattern.match(city):
+            return None  # "<street>, <State>[ zip]" -- no real city was ever given
         zip_code = "".join(c for c in parts[2].split()[-1] if c.isdigit())[:5] if len(parts) >= 3 and parts[2].split() else ""
     elif county_fallback:
         city = county_fallback
@@ -83,7 +96,7 @@ def parse_address(address: str, county_fallback: str | None = None) -> tuple[str
     else:
         return None
 
-    return street, city, "TX", zip_code
+    return street, city, state, zip_code
 
 
 def build_batch_csv(rows: list[tuple[str, str, str, str, str]]) -> str:
@@ -123,19 +136,20 @@ def main():
     print(f"{len(ungeocoded)} listings have an address but no coordinates.")
 
     # unique_id must be a single token with no commas -- account numbers
-    # aren't globally unique across counties, so combine county+account.
+    # aren't globally unique across counties (and county names aren't
+    # unique across states), so the key combines all three.
     batch_rows = []
     id_to_key = {}
     skipped = 0
-    for county, account_number, address in ungeocoded:
-        parsed = parse_address(address, county_fallback=county)
+    for county, account_number, address, listing_state in ungeocoded:
+        parsed = parse_address(address, listing_state, county_fallback=county)
         if parsed is None:
             skipped += 1
             continue
-        street, city, state, zip_code = parsed
+        street, city, geocode_state, zip_code = parsed
         unique_id = str(len(batch_rows))
-        id_to_key[unique_id] = (county, account_number)
-        batch_rows.append((unique_id, street, city, state, zip_code))
+        id_to_key[unique_id] = (county, account_number, listing_state)
+        batch_rows.append((unique_id, street, city, geocode_state, zip_code))
 
     print(f"{len(batch_rows)} addresses well-formed enough to geocode ({skipped} skipped -- too irregular to split).")
     if not batch_rows:
@@ -152,8 +166,8 @@ def main():
         print(f"Matched {len(matches)} of {len(chunk)}.")
 
         for unique_id, (lat, lon) in matches.items():
-            county, account_number = id_to_key[unique_id]
-            combined_db.update_lat_lon(conn, county, account_number, lat, lon)
+            county, account_number, listing_state = id_to_key[unique_id]
+            combined_db.update_lat_lon(conn, county, account_number, lat, lon, state=listing_state)
             updated += 1
 
     print(f"Backfilled coordinates for {updated} listings.")

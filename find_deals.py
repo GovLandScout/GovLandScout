@@ -100,13 +100,13 @@ def fetch_all_listings(conn: combined_db.PgConnection) -> list[dict]:
     """
     rows = conn.execute("""
         SELECT county, precinct, account_number, minimum_bid, estimated_value, address,
-               description, source_url, latitude, longitude, source
+               description, source_url, latitude, longitude, source, state
         FROM listings
     """).fetchall()
 
     listings = []
     for (county, precinct, account_number, minimum_bid, estimated_value, address,
-         description, source_url, latitude, longitude, source) in rows:
+         description, source_url, latitude, longitude, source, state) in rows:
         min_bid = safe_float(minimum_bid)
         est_value = safe_float(estimated_value)
 
@@ -130,6 +130,7 @@ def fetch_all_listings(conn: combined_db.PgConnection) -> list[dict]:
 
         listings.append({
             "county": county,
+            "state": state,
             "precinct": precinct or "",
             "account_number": account_number,
             "minimum_bid": min_bid,

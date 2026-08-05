@@ -109,9 +109,22 @@ def init_db(conn: PgConnection):
             last_seen TEXT
         )
     """)
+    # Added once govease_scraper.py started covering Pennsylvania counties
+    # alongside its original Texas ones (see that module's docstring) --
+    # every row before that was implicitly Texas, and county names aren't
+    # unique across states (both TX and PA have a Potter County), so
+    # DEFAULT 'TX' backfills existing rows correctly rather than leaving
+    # them ambiguous. Postgres fills existing rows from the DEFAULT in the
+    # same statement, so this is safe to run against a table that already
+    # has data.
+    conn.execute("ALTER TABLE listings ADD COLUMN IF NOT EXISTS state TEXT NOT NULL DEFAULT 'TX'")
+    # Replaces the old (county, account_number) key -- kept as a plain DROP
+    # (not IF EXISTS-guarded on the old name only) so a fresh database
+    # never creates the stale index in the first place.
+    conn.execute("DROP INDEX IF EXISTS idx_county_account")
     conn.execute("""
-        CREATE UNIQUE INDEX IF NOT EXISTS idx_county_account
-        ON listings(county, account_number)
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_state_county_account
+        ON listings(state, county, account_number)
     """)
 
     # One row per scraper per daily run (see run_daily_scrapers.py) --
@@ -297,10 +310,15 @@ def upsert_listing(
     latitude: float | None = None,
     longitude: float | None = None,
     commit: bool = True,
+    state: str = "TX",
 ):
     """
-    Keyed on (county, account_number) -- account numbers aren't unique
-    across counties.
+    Keyed on (state, county, account_number) -- account numbers aren't
+    unique across counties, and county names aren't unique across states
+    (both TX and PA have a Potter County). Defaults to "TX" since every
+    caller except govease_scraper.py's Pennsylvania auctions is still
+    Texas-only; that default keeps this a source-compatible change for
+    every other scraper in the project.
 
     commit=False lets a caller writing many rows in one loop (lgbs_scraper.py
     inserting 3,000-6,000+ listings a run, say) batch them into one commit
@@ -321,9 +339,9 @@ def upsert_listing(
         INSERT INTO listings (
             county, account_number, precinct, minimum_bid, estimated_value,
             address, description, status, source, source_url, latitude,
-            longitude, first_seen, last_seen
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT (county, account_number) DO UPDATE SET
+            longitude, first_seen, last_seen, state
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT (state, county, account_number) DO UPDATE SET
             precinct = EXCLUDED.precinct,
             minimum_bid = EXCLUDED.minimum_bid,
             estimated_value = EXCLUDED.estimated_value,
@@ -339,7 +357,7 @@ def upsert_listing(
         (
             county, account_number, precinct, minimum_bid, estimated_value,
             address, description, status, source, source_url, latitude,
-            longitude, now, now,
+            longitude, now, now, state,
         ),
     )
     if commit:
@@ -411,13 +429,20 @@ def update_estimated_value(
 
 
 def update_lat_lon(
-    conn: PgConnection, county: str, account_number: str, latitude: float, longitude: float
+    conn: PgConnection, county: str, account_number: str, latitude: float, longitude: float,
+    state: str = "TX",
 ):
-    """Narrow update for geocoding backfill scripts (e.g. geocode_backfill.py) -- same shape as update_estimated_value."""
+    """
+    Narrow update for geocoding backfill scripts (e.g. geocode_backfill.py)
+    -- same shape as update_estimated_value. Takes `state` (unlike that
+    function) because geocode_backfill.py runs across every source/state,
+    not just one hardcoded county, so it needs the full key to avoid
+    touching the wrong state's same-named county (see upsert_listing).
+    """
     now = datetime.now(timezone.utc).isoformat()
     conn.execute(
-        "UPDATE listings SET latitude = ?, longitude = ?, last_seen = ? WHERE county = ? AND account_number = ?",
-        (latitude, longitude, now, county, account_number),
+        "UPDATE listings SET latitude = ?, longitude = ?, last_seen = ? WHERE state = ? AND county = ? AND account_number = ?",
+        (latitude, longitude, now, state, county, account_number),
     )
     conn.commit()
 

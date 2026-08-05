@@ -541,7 +541,7 @@ def page_shell(title: str, active: str, body: str, extra_head: str = "") -> str:
     <head>
       <meta charset="utf-8" />
       <meta name="viewport" content="width=device-width, initial-scale=1" />
-      <meta name="description" content="A searchable, mappable record of real estate being sold by government entities across Texas -- county tax sales, federal and state surplus, HUD foreclosures, and land bank listings." />
+      <meta name="description" content="A searchable, mappable record of real estate being sold by government entities across Texas and Pennsylvania -- county tax sales, federal and state surplus, HUD foreclosures, and land bank listings." />
       <title>{title}</title>
       {extra_head}
       <style>{PAGE_CSS}</style>
@@ -584,7 +584,9 @@ def listing_for_js(l: dict) -> dict:
     city = extract_city(l["address"])
     search_place = city if city else (l["address"] or "")
     metro_terms = " ".join(sorted(COUNTY_METRO_ALIASES.get(l["county"], ())))
-    search_text = f"{search_county} {l['precinct']} {search_place} {metro_terms}".lower()
+    # Including state lets "PA" / "TX" work as a location search term, and
+    # also disambiguates a search like "Potter" -- both states have one.
+    search_text = f"{search_county} {l['state']} {l['precinct']} {search_place} {metro_terms}".lower()
     image_url = (
         f"/api/thumbnail?lat={l['latitude']}&lon={l['longitude']}"
         if l["latitude"] is not None and l["longitude"] is not None
@@ -592,6 +594,7 @@ def listing_for_js(l: dict) -> dict:
     )
     return {
         "county": l["county"],
+        "state": l["state"],
         "precinct": l["precinct"] or None,
         "account_number": l["account_number"],
         "is_manual": l["source"] == "manual",
@@ -663,13 +666,13 @@ def deals_page():
     priced_count = payload["priced_count"]
 
     body = f"""
-      <h1>GovLandScout - Texan's Distressed Property Finder</h1>
-      <p class="subtitle">GovLandScout is a project attempting to show a state-wide listing of all property being sold by the government+, to try to help Texan's combat rising home prices and a lack of housing affordability. {total_count} total listings across all sources, shown below in random order -- use "Sort by" to rank by equity, estimated value, or minimum bid instead. {priced_count} have a full equity calculation; listings without one still show, just with "{NO_DATA}" where a field doesn't apply.</p>
+      <h1>GovLandScout - Distressed Property Finder</h1>
+      <p class="subtitle">GovLandScout is a project attempting to show a listing of all property being sold by the government, currently covering Texas and Pennsylvania, to try to help combat rising home prices and a lack of housing affordability. {total_count} total listings across all sources, shown below in random order -- use "Sort by" to rank by equity, estimated value, or minimum bid instead. {priced_count} have a full equity calculation; listings without one still show, just with "{NO_DATA}" where a field doesn't apply.</p>
 
       <div class="controls card">
         <div class="control">
           <label for="locationFilter">Location (county, precinct, or address)</label>
-          <input type="text" id="locationFilter" placeholder="e.g. Dallas, Houston, Precinct 4..." oninput="applyFilters()">
+          <input type="text" id="locationFilter" placeholder="e.g. Dallas, Beaver PA, Precinct 4..." oninput="applyFilters()">
         </div>
 
         <div class="control range-control">
@@ -795,12 +798,14 @@ def deals_page():
         // Bookmarks live only in this browser's localStorage -- no
         // account/server involved, so "bookmark a listing" works the same
         // for every visitor with zero backend changes. Keyed on
-        // county+account_number since that's already this project's
-        // stable per-listing identity (see combined_db.py's dedup key).
+        // state+county+account_number since that's already this project's
+        // stable per-listing identity (see combined_db.py's dedup key --
+        // state matters here too, since county names collide across
+        // states, e.g. Potter County exists in both TX and PA).
         const BOOKMARKS_KEY = 'govlandscout_bookmarks';
 
         function bookmarkKey(l) {{
-          return l.county + '|' + l.account_number;
+          return l.state + '|' + l.county + '|' + l.account_number;
         }}
 
         function loadBookmarks() {{
@@ -938,9 +943,10 @@ def deals_page():
             ? `<img src="${{escapeHtml(l.image_url)}}" width="80" height="80" loading="lazy" alt="Satellite view" class="thumb">`
             : NO_DATA_HTML;
 
+          const countyLabel = l.county + (l.state ? ', ' + l.state : '');
           const countyHtml = l.is_manual
-            ? `${{escapeHtml(l.county)}} <span class="manual-badge" title="Submitted by a site visitor, not from an official government source">User submitted</span>`
-            : escapeHtml(l.county);
+            ? `${{escapeHtml(countyLabel)}} <span class="manual-badge" title="Submitted by a site visitor, not from an official government source">User submitted</span>`
+            : escapeHtml(countyLabel);
 
           const bookmarkHtml = `<button class="bookmark-btn${{isBookmarked(l) ? ' saved' : ''}}" `
             + `data-key="${{escapeHtml(bookmarkKey(l))}}" onclick="toggleBookmark(this.dataset.key)" `
@@ -976,7 +982,7 @@ def deals_page():
           }}
 
           const county = document.createElement('strong');
-          county.textContent = l.county;
+          county.textContent = l.county + (l.state ? ', ' + l.state : '');
           div.appendChild(county);
 
           const bookmarkBtn = document.createElement('button');
@@ -1442,7 +1448,7 @@ SOURCE_LABELS = {
     "publicsurplus.com": "PublicSurplus (Texas government sellers)",
     "realauction.com": "RealAuction/RealForeclose (Sheriff & Constable sales)",
     "guadalupetx.gov": "Guadalupe County (self-published)",
-    "govease.com": "GovEase (Sheriff & Constable sales)",
+    "govease.com": "GovEase (county tax sale platform -- TX Sheriff/Constable sales, PA Upset/Judicial sales)",
     "collincountytx.gov": "Collin County Constable Sales (self-published)",
     "manual": "User-submitted (unverified)",
 }
@@ -1456,14 +1462,17 @@ def impact_page():
     conn.close()
 
     total = len(listings)
-    counties = len({l["county"] for l in listings})
+    # (county, state), not just county -- county names collide across
+    # states (both TX and PA have a Potter County), so deduping on the
+    # name alone would undercount by folding two distinct counties together.
+    counties = len({(l["county"], l["state"]) for l in listings})
     with_coords = sum(1 for l in listings if l["latitude"] is not None)
     priced_with_equity = [l for l in listings if l["equity"] is not None and l["equity"] > 0]
     total_equity = sum(l["equity"] for l in priced_with_equity)
 
     stats = [
         (f"{total:,}", "Total listings tracked"),
-        (f"{counties}", "Texas counties covered"),
+        (f"{counties}", "Counties covered"),
         (f"{len(sources)}", "Independent data sources"),
         (f"{with_coords:,}", "Listings mapped with real coordinates"),
         (f"{len(priced_with_equity):,}", "Listings with a calculated equity opportunity"),
@@ -1512,7 +1521,7 @@ def investment_info_page():
          anything here.</p>
 
       <div class="card prose" style="padding: 1.5rem 1.75rem; margin-bottom: 1.5rem;">
-        <h2>County tax sales</h2>
+        <h2>Texas county tax sales</h2>
         <p>This is the bulk of what's on this site. A county has gone unpaid on property taxes long enough that
            it forecloses and auctions the property to recover the debt, under Texas Property Tax Code Chapter 34.
            A Sheriff or Constable runs the actual sale no matter who's doing the marketing around it. Most
@@ -1535,6 +1544,24 @@ def investment_info_page():
            really have free use of what you bought. Double-check the current period and premium against the
            statute itself, or with an attorney, before you bid -- don't take this page's word for it.</p>
         <p>Payment is almost always cash or a cashier's check, due the same day at the courthouse-steps sale.</p>
+
+        <h2>Pennsylvania county tax sales (Upset &amp; Judicial)</h2>
+        <p>Run under Pennsylvania's Real Estate Tax Sale Law, not Texas's Tax Code -- a different statute with
+           meaningfully different rules, even though the listings show up on this site the same way (several PA
+           counties, like several TX ones, sell through the GovEase platform rather than running their own site).
+           A property is first offered at an <b>Upset Sale</b>; if it doesn't sell there, the county can petition
+           the court to resell it at a later <b>Judicial Sale</b> instead. The type matters a lot: an Upset Sale
+           conveys the property <i>subject to</i> existing mortgages, judgments, and other liens of record -- you
+           can inherit debt attached to the property, not just the property itself. A Judicial Sale, by contrast,
+           is court-ordered to convey free and clear of liens, mortgages, and most claims (as long as every
+           lienholder got proper notice), which is the whole reason a property graduates from one sale type to
+           the other.</p>
+        <p>Unlike Texas, Pennsylvania generally has <b>no statutory redemption period</b> after either sale type
+           closes -- ownership is final, not contingent on a window the former owner can still exercise. The one
+           common exception: in most counties, an owner-occupied property carries roughly a 9-month post-sale
+           right of redemption if the former owner pays off what's owed. Whether that exception applies, and the
+           exact terms either way, is set by each county's own Tax Claim Bureau -- confirm directly with them, and
+           with an attorney, before bidding; this page is a starting point, not the statute.</p>
 
         <h2>Federal surplus real estate (GSA)</h2>
         <p>Every so often the federal government decides it doesn't need a piece of property anymore and sells it
@@ -1598,7 +1625,7 @@ def investment_info_page():
       <div class="card" style="padding: 1.5rem 1.75rem; border-color: #cbd5e1;">
         <h2 style="margin-top:0;">This isn't legal, tax, or financial advice</h2>
         <p class="prose" style="margin-bottom:0;">The redemption periods, premiums, deed types, and financing
-           terms above reflect how these rules generally work in Texas and federally, as best we can summarize
+           terms above reflect how these rules generally work in Texas, Pennsylvania, and federally, as best we can summarize
            them -- but statutes get amended, agencies change their terms, and every property has its own facts
            that can change the analysis. None of this replaces an actual conversation with a licensed real estate
            attorney, title company, or tax professional, and you should independently verify current terms with
@@ -1625,9 +1652,18 @@ def manual_upload_form_html(banner: str = "") -> str:
           <input type="text" id="website" name="website" tabindex="-1" autocomplete="off">
         </div>
 
-        <div class="field">
-          <label for="county">County *</label>
-          <input type="text" id="county" name="county" placeholder="e.g. Harris" required maxlength="100">
+        <div class="two-col">
+          <div class="field">
+            <label for="county">County *</label>
+            <input type="text" id="county" name="county" placeholder="e.g. Harris" required maxlength="100">
+          </div>
+          <div class="field">
+            <label for="state">State *</label>
+            <select id="state" name="state" required>
+              <option value="TX">Texas</option>
+              <option value="PA">Pennsylvania</option>
+            </select>
+          </div>
         </div>
 
         <div class="field">
@@ -1697,6 +1733,7 @@ def manual_upload_page(success: str | None = None, error: str | None = None):
 def manual_upload_submit(
     request: Request,
     county: str = Form(...),
+    state: str = Form("TX"),
     address: str = Form(""),
     latitude: str = Form(""),
     longitude: str = Form(""),
@@ -1736,6 +1773,10 @@ def manual_upload_submit(
 
     if not county:
         return RedirectResponse("/manual-upload?error=County is required.", status_code=303)
+
+    state = state.strip().upper()
+    if state not in ("TX", "PA"):
+        return RedirectResponse("/manual-upload?error=State must be Texas or Pennsylvania.", status_code=303)
 
     if not source_url:
         return RedirectResponse(
@@ -1811,6 +1852,7 @@ def manual_upload_submit(
         source_url=source_url or None,
         latitude=latitude,
         longitude=longitude,
+        state=state,
     )
     conn.close()
 
@@ -1824,9 +1866,9 @@ def about_page():
 
       <div class="card prose" style="padding: 1.5rem 1.75rem; margin-bottom: 1.5rem;">
         <h2>What this is</h2>
-        <p>GovLandScout aggregates real estate being sold by government entities across Texas -- county tax
-           foreclosure sales, federal and state surplus property, HUD-owned foreclosed homes, and Veterans Land
-           Board tracts -- into one searchable, mappable place. Rising home prices and limited housing
+        <p>GovLandScout aggregates real estate being sold by government entities across Texas and Pennsylvania --
+           county tax foreclosure sales, federal and state surplus property, HUD-owned foreclosed homes, and
+           Veterans Land Board tracts -- into one searchable, mappable place. Rising home prices and limited housing
            affordability make it harder to find a way in; these listings are already public, just scattered
            across dozens of separate county, state, and federal sites. This project pulls them together.</p>
 

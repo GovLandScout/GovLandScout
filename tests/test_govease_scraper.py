@@ -9,7 +9,36 @@ positions).
 
 import unittest
 
-from govease_scraper import clean_money, parse_county_grid
+from govease_scraper import COUNTIES, clean_money, parse_county_grid
+
+# Trimmed from a real Beaver County (PA) response -- same shape as Denton's
+# TX fixture below, confirming the PA rollout didn't need any parser
+# changes (GovEase's grid format is state-agnostic; only the COUNTIES list
+# changed). PA's bid column is labeled "Face Value", like Grayson's TX one.
+BEAVER_HTML = """
+<table id="dt-auctions">
+  <thead>
+    <tr>
+      <th></th><th>Watch</th><th>Unique #</th><th>Parcel #</th><th>Owner Name</th>
+      <th>Face Value</th><th>Parcel Address:</th><th>Auction Name:</th>
+      <th>Auction Type:</th><th>Bidding</th><th>My Bid</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td></td><td></td>
+      <td><a href="/pa/pabeaverupset/1533/openparcel/2087955/01-003-0403-000">1</a></td>
+      <td>01-003-0403-000</td>
+      <td><span>CLECKLEY,TOMIYA</span></td>
+      <td class="alignDollar">$2,993.84</td>
+      <td>828 2ND AVE</td>
+      <td>2026 Beaver County Upset Sale</td>
+      <td>Tax Lien</td>
+      <td></td><td></td>
+    </tr>
+  </tbody>
+</table>
+"""
 
 # Trimmed from a real Denton County response: header labels, one normal
 # row, and one row with no address ("N/A", as Wichita's real data has).
@@ -128,6 +157,43 @@ class ParseCountyGridTests(unittest.TestCase):
 
     def test_no_table_present_returns_no_listings(self):
         self.assertEqual(parse_county_grid("<html><body>nothing here</body></html>", "Denton"), [])
+
+    def test_pennsylvania_county_parses_the_same_way_as_texas(self):
+        listings = parse_county_grid(BEAVER_HTML, "Beaver")
+        self.assertEqual(listings[0]["account_number"], "01-003-0403-000")
+        self.assertEqual(listings[0]["minimum_bid"], "2993.84")
+        self.assertEqual(listings[0]["address"], "828 2ND AVE")
+
+
+class CountiesTableTests(unittest.TestCase):
+    """
+    Data-integrity checks on the COUNTIES list itself, not the HTML parser
+    -- catches a bad edit (e.g. a typo'd auction_id, or Erie's two sale
+    types losing their disambiguating sale_type) without needing a live
+    request.
+    """
+
+    def test_every_county_has_a_two_letter_state(self):
+        for county, state, slug, auction_id, sale_type in COUNTIES:
+            self.assertEqual(len(state), 2, f"{county}: state {state!r} isn't a 2-letter code")
+
+    def test_no_duplicate_slugs_or_auction_ids(self):
+        slugs = [c[2] for c in COUNTIES]
+        auction_ids = [c[3] for c in COUNTIES]
+        self.assertEqual(len(slugs), len(set(slugs)))
+        self.assertEqual(len(auction_ids), len(set(auction_ids)))
+
+    def test_texas_counties_have_no_sale_type_suffix(self):
+        # Must stay None -- these keys are already live in production
+        # (see COUNTIES's own comment); adding a suffix would orphan them.
+        for county, state, slug, auction_id, sale_type in COUNTIES:
+            if state == "tx":
+                self.assertIsNone(sale_type, f"{county}: TX counties must not get a sale_type suffix")
+
+    def test_erie_pa_has_two_distinct_sale_types(self):
+        erie_sale_types = {sale_type for county, state, slug, auction_id, sale_type in COUNTIES
+                            if state == "pa" and county == "Erie"}
+        self.assertEqual(erie_sale_types, {"Judicial", "Upset"})
 
 
 if __name__ == "__main__":

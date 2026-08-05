@@ -1,5 +1,5 @@
 """
-GovLandScout - GovEase Scraper (Texas counties)
+GovLandScout - GovEase Scraper (Texas and Pennsylvania counties)
 
 GovEase (liveauctions.govease.com) is another online tax sale platform,
 the same relationship to this project as RealAuction (see
@@ -20,6 +20,27 @@ sources, so it's deliberately excluded (same reasoning as RealAuction's
 exclusion list). Denton, Grayson, and Wichita aren't LGBS/MVBA/PBFCM
 clients, so there's nothing to double up against for those three.
 
+As of adding Pennsylvania support ("Scraping pennsylvania tax sales"),
+the same dropdown also lists seven PA county auctions, conducted under
+Pennsylvania's Real Estate Tax Sale Law rather than Texas Property Tax
+Code Chapter 34 (different legal process, same platform -- see the
+Investment Info page):
+
+    PA - Beaver - Upset Sale
+    PA - Bucks - Upset Sale
+    PA - Erie - Judicial Sale
+    PA - Erie - Upset Sale
+    PA - Lawrence - Judicial Sale
+    PA - Potter - Upset Sale
+    PA - York - Upset Sale
+
+None of these are known to double-list on another PA trustee site this
+project scrapes (there isn't one yet), so all seven are included, unlike
+the TX McLennan exclusion above. Every listing carries a `state` tag
+("TX"/"PA") through to combined_db.upsert_listing -- required because
+county names collide across states (Texas has its own Potter County,
+around Amarillo, entirely unrelated to Pennsylvania's).
+
 Unlike RealAuction, this doesn't need any session/JS reverse-engineering:
 each auction's /browsestandard page 302-redirects to /browse, which
 server-renders the full property grid directly in the initial HTML
@@ -28,12 +49,12 @@ with "paging": false, i.e. everything is on one page, no pagination to
 walk).
 
 Column layout varies slightly between auctions/states (e.g. Denton's bid
-column is labeled "Minimum Bid", Grayson's "Face Value" -- and other
-states' auctions add columns like "Property Description" that TX's don't
-have), so this reads the actual <thead> to map label -> column index per
-auction rather than assuming a fixed position, the same defensiveness
-realauction_scraper.py's parse_ad_table uses for its own label/value
-pairs.
+column is labeled "Minimum Bid", Grayson's and every PA county's "Face
+Value" -- and other states' auctions add columns like "Property
+Description" that TX's don't have), so this reads the actual <thead> to
+map label -> column index per auction rather than assuming a fixed
+position, the same defensiveness realauction_scraper.py's parse_ad_table
+uses for its own label/value pairs.
 
 "Unique #" is just that auction's row sequence number (resets and isn't
 stable across runs), so it's not usable as a dedupe key -- "Parcel #"
@@ -54,12 +75,34 @@ import combined_db
 BASE_URL = "https://liveauctions.govease.com"
 DB_PATH = "govease_properties.db"
 
-# (county, state, slug, auction_id) -- McLennan deliberately omitted, see
-# module docstring.
+# (county, state, slug, auction_id, sale_type) -- McLennan deliberately
+# omitted, see module docstring. `state` doubles as both the URL path
+# segment GovEase expects (lowercase) and, uppercased, the `state` value
+# written to combined_db -- values and auction IDs reverse-engineered from
+# the <select> on liveauctions.govease.com's own auction-picker dropdown.
+#
+# `sale_type` is None for every TX county (one auction each, so a parcel
+# number is already a unique key -- kept exactly as before, unsuffixed, so
+# this doesn't orphan any of the ~3 years of TX rows already in
+# production). PA counties get a real sale_type because Erie runs BOTH an
+# Upset and a Judicial sale, and Pennsylvania's tax sale process is
+# specifically designed to re-list a parcel that didn't sell at Upset into
+# a later Judicial sale (see Investment Info) -- the same parcel number can
+# legitimately appear in both, as two different, currently-active listings
+# with different terms and bid amounts, not a duplicate to collapse. Every
+# PA county gets the suffix uniformly (not just Erie) so the key format
+# doesn't depend on which counties happen to collide today.
 COUNTIES = [
-    ("Denton", "tx", "txdenton", 1355),
-    ("Grayson", "tx", "txgrayson", 1280),
-    ("Wichita", "tx", "txwichita", 1429),
+    ("Denton", "tx", "txdenton", 1355, None),
+    ("Grayson", "tx", "txgrayson", 1280, None),
+    ("Wichita", "tx", "txwichita", 1429, None),
+    ("Beaver", "pa", "pabeaverupset", 1533, "Upset"),
+    ("Bucks", "pa", "pabucksupset", 1535, "Upset"),
+    ("Erie", "pa", "paeriejudicial", 1528, "Judicial"),
+    ("Erie", "pa", "paerieupset", 1527, "Upset"),
+    ("Lawrence", "pa", "palawrencejudicial", 1492, "Judicial"),
+    ("Potter", "pa", "papotterupset", 1453, "Upset"),
+    ("York", "pa", "payorkupset", 1350, "Upset"),
 ]
 
 HEADERS = {
@@ -189,7 +232,7 @@ def main():
     session = requests.Session()
     total_listings = 0
 
-    for county, state, slug, auction_id in COUNTIES:
+    for county, state, slug, auction_id, sale_type in COUNTIES:
         html = fetch_county(session, state, slug, auction_id)
         if html is None:
             print(f"  {county}: fetch failed")
@@ -199,6 +242,8 @@ def main():
         print(f"  {county}: {len(listings)} propert{'y' if len(listings) == 1 else 'ies'}")
 
         for listing in listings:
+            if sale_type:
+                listing["account_number"] = f"{listing['account_number']}_{sale_type.upper()}"
             upsert_local(conn, listing)
             combined_db.upsert_listing(
                 combined_conn,
@@ -212,6 +257,7 @@ def main():
                 status="Active",
                 source="govease.com",
                 source_url=listing["source_url"],
+                state=state.upper(),
             )
             total_listings += 1
 
