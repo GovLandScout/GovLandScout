@@ -18,14 +18,20 @@ train_model.py, with its small JSON output committed to the repo.
 Static, not live: this doesn't run on a schedule, so the map reflects
 whenever this was last run, not today's date. Good enough for a
 research/portfolio feature -- re-run by hand after retraining.
+
+Run with a state key from states.py as the only CLI arg, e.g.
+`python3 generate_predictions.py pa` (defaults to tx).
 """
 
 import json
+import sys
 from pathlib import Path
 
 import joblib
 import numpy as np
 import pandas as pd
+
+from states import STATES
 
 DATA_DIR = Path(__file__).parent / "data"
 PUBLIC_DIR = Path(__file__).parent / "public"
@@ -39,9 +45,10 @@ FEATURE_COLS = [
 ]
 
 # Zillow's county names and the Census geometry's names match exactly
-# except for this one spelling variant -- same kind of one-off fix
+# except for these spelling variants -- same kind of one-off fix
 # lgbs_scraper.py/mvba_scraper.py already use for their own county-name
-# mismatches (see their own COUNTY_NAME_OVERRIDES).
+# mismatches (see their own COUNTY_NAME_OVERRIDES). Shared across states
+# since it's just a flat name->name lookup, not worth splitting up.
 COUNTY_NAME_OVERRIDES = {"De Witt County": "DeWitt County"}
 
 
@@ -81,17 +88,20 @@ def recent_history_by_county(dataset: pd.DataFrame) -> dict[str, list[list]]:
 
 
 def main():
-    dataset = pd.read_csv(DATA_DIR / "county_month_dataset.csv")
+    state_key = sys.argv[1] if len(sys.argv) > 1 else "tx"
+    state = STATES[state_key]
+
+    dataset = pd.read_csv(DATA_DIR / f"{state_key}_county_month_dataset.csv")
     dataset["year_month"] = pd.PeriodIndex(dataset["year_month"], freq="M")
 
     latest = latest_row_per_county(dataset)
-    print(f"{len(latest)} counties with a usable current row.")
+    print(f"{len(latest)} {state['name']} counties with a usable current row.")
 
     history = recent_history_by_county(dataset)
 
     predictions = {}
     for horizon in TARGET_HORIZONS:
-        model = joblib.load(Path(__file__).parent / f"county_distress_model_{horizon}m.joblib")
+        model = joblib.load(Path(__file__).parent / f"county_distress_model_{state_key}_{horizon}m.joblib")
         means, stds = predict_with_uncertainty(model, latest[FEATURE_COLS])
         for county, mean, std in zip(latest["county"], means, stds):
             predictions.setdefault(county, {})[f"change_{horizon}m"] = round(float(mean), 4)
@@ -108,7 +118,7 @@ def main():
             **predictions[county],
         })
 
-    dest = PUBLIC_DIR / "county_predictions.json"
+    dest = PUBLIC_DIR / f"{state_key}_county_predictions.json"
     dest.write_text(json.dumps(output, indent=None, separators=(",", ":")))
     print(f"Wrote {len(output)} counties' predictions to {dest} ({dest.stat().st_size / 1024:.0f} KB)")
 

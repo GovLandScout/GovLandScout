@@ -35,8 +35,12 @@ After cross-validation, one final "production" random forest per
 horizon is fit on *all* available data (there's no held-out test set to
 protect at deployment time -- more real data only helps) and saved for
 generate_predictions.py to use.
+
+Run with a state key from states.py as the only CLI arg, e.g.
+`python3 train_model.py pa` (defaults to tx).
 """
 
+import sys
 from pathlib import Path
 
 import joblib
@@ -44,6 +48,8 @@ import pandas as pd
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.linear_model import LinearRegression
 from sklearn.metrics import mean_absolute_error
+
+from states import STATES
 
 DATA_DIR = Path(__file__).parent / "data"
 TARGET_HORIZONS = [1, 3, 6]
@@ -108,7 +114,7 @@ def cross_validate(dataset: pd.DataFrame, horizon: int) -> list[dict]:
     return fold_results
 
 
-def fit_production_model(dataset: pd.DataFrame, horizon: int) -> dict:
+def fit_production_model(dataset: pd.DataFrame, horizon: int, state_key: str) -> dict:
     """The model generate_predictions.py actually uses -- trained on every
     row available, not held back from a test split, since there's no
     accuracy claim being protected here, just the best model deployable
@@ -119,7 +125,7 @@ def fit_production_model(dataset: pd.DataFrame, horizon: int) -> dict:
     model = make_random_forest()
     model.fit(usable[FEATURE_COLS], usable[target_col])
 
-    model_path = Path(__file__).parent / f"county_distress_model_{horizon}m.joblib"
+    model_path = Path(__file__).parent / f"county_distress_model_{state_key}_{horizon}m.joblib"
     joblib.dump(model, model_path)
 
     return {
@@ -135,11 +141,14 @@ def summarize(fold_results: list[dict], key: str) -> tuple[float, float]:
 
 
 def main():
-    dataset = pd.read_csv(DATA_DIR / "county_month_dataset.csv")
+    state_key = sys.argv[1] if len(sys.argv) > 1 else "tx"
+    state = STATES[state_key]
+
+    dataset = pd.read_csv(DATA_DIR / f"{state_key}_county_month_dataset.csv")
     dataset["year_month"] = pd.PeriodIndex(dataset["year_month"], freq="M")
 
     for horizon in TARGET_HORIZONS:
-        print(f"\n{'=' * 60}\n{horizon}-MONTH HORIZON\n{'=' * 60}")
+        print(f"\n{'=' * 60}\n{state['name'].upper()} -- {horizon}-MONTH HORIZON\n{'=' * 60}")
 
         folds = cross_validate(dataset, horizon)
         print(f"\n{N_CV_FOLDS}-fold walk-forward cross-validation "
@@ -156,7 +165,7 @@ def main():
         print(f"\nRandom forest beats naive by {1 - rf_mean / naive_mean:.1%} on average across folds, "
               f"linear regression by {1 - lr_mean / naive_mean:.1%}.")
 
-        production = fit_production_model(dataset, horizon)
+        production = fit_production_model(dataset, horizon, state_key)
         print(f"\nProduction model trained on all {production['rows']:,} available rows "
               f"(saved to {production['model_path'].name}).")
         print("Feature importances:")

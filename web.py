@@ -65,17 +65,30 @@ NO_DATA = "No data available"
 
 # model/ is a separate, isolated project (own venv, own dependencies --
 # pandas/scikit-learn are never installed here on Render) that produces
-# these two small static files by hand, not on a schedule -- see
-# model/README.md. Read once at import time rather than per-request:
-# they only change when someone re-runs model/generate_predictions.py
-# and commits the result, not on every page load.
+# these small static files by hand, not on a schedule -- see
+# model/README.md and model/states.py. Read once at import time rather
+# than per-request: they only change when someone re-runs
+# model/generate_predictions.py and commits the result, not on every
+# page load. Deliberately not importing model/states.py itself here --
+# web.py stays self-contained, reading only the static files that
+# project produces, not its code.
 MODEL_PUBLIC_DIR = Path(__file__).resolve().parent / "model" / "public"
-try:
-    TX_COUNTIES_GEOJSON = (MODEL_PUBLIC_DIR / "tx_counties.geojson").read_text()
-    COUNTY_PREDICTIONS_JSON = (MODEL_PUBLIC_DIR / "county_predictions.json").read_text()
-except FileNotFoundError:
-    TX_COUNTIES_GEOJSON = "null"
-    COUNTY_PREDICTIONS_JSON = "[]"
+MARKET_TRENDS_STATES = [
+    {"key": "tx", "name": "Texas", "route": "/market-trends", "nav_key": "market-trends-tx"},
+    {"key": "pa", "name": "Pennsylvania", "route": "/market-trends-pa", "nav_key": "market-trends-pa"},
+]
+
+
+def _load_model_public_file(filename: str, default: str) -> str:
+    try:
+        return (MODEL_PUBLIC_DIR / filename).read_text()
+    except FileNotFoundError:
+        return default
+
+
+for _state in MARKET_TRENDS_STATES:
+    _state["geojson"] = _load_model_public_file(f"{_state['key']}_counties.geojson", "null")
+    _state["predictions"] = _load_model_public_file(f"{_state['key']}_county_predictions.json", "[]")
 
 # Location search matches raw county/address text, which misses listings
 # in a metro's collar counties/suburbs that don't happen to spell out the
@@ -464,7 +477,8 @@ TURNSTILE_HEAD = """
 def nav_html(active: str) -> str:
     pages = [
         ("/", "home", "Home"),
-        ("/market-trends", "market-trends", "Market Trends (Experimental)"),
+        ("/market-trends", "market-trends-tx", "Market Trends: TX (Experimental)"),
+        ("/market-trends-pa", "market-trends-pa", "Market Trends: PA (Experimental)"),
         ("/impact", "impact", "Impact"),
         ("/investment-info", "investment", "Investment Info"),
         ("/manual-upload", "manual-upload", "Manual property uploads"),
@@ -1169,11 +1183,10 @@ def deals_page():
     return page_shell("GovLandScout", "home", body, extra_head=LEAFLET_HEAD)
 
 
-@app.get("/market-trends", response_class=HTMLResponse)
-def market_trends_page():
+def render_market_trends_page(state: dict) -> str:
     body = f"""
-      <h1>Market Trends <span class="manual-badge" title="A research model, not a feature of the property listings above -- see the notes below before reading anything into it">Experimental</span></h1>
-      <p class="subtitle">A random forest model trained on Zillow Research and FRED historical data -- not GovLandScout's own listings -- predicting how each Texas county's share of price-cut listings is likely to move over the next 1, 3, or 6 months. Darker red means the model expects <i>more</i> price cuts (rising distress); darker green means <i>fewer</i> (easing). Counties with no shading don't have enough Zillow history to include yet.</p>
+      <h1>Market Trends: {state['name']} <span class="manual-badge" title="A research model, not a feature of the property listings above -- see the notes below before reading anything into it">Experimental</span></h1>
+      <p class="subtitle">A random forest model trained on Zillow Research and FRED historical data -- not GovLandScout's own listings -- predicting how each {state['name']} county's share of price-cut listings is likely to move over the next 1, 3, or 6 months. Darker red means the model expects <i>more</i> price cuts (rising distress); darker green means <i>fewer</i> (easing). Counties with no shading don't have enough Zillow history to include yet.</p>
 
       <div class="card" style="padding: 1.5rem 1.75rem; margin-bottom: 1.5rem;">
         <div class="control" style="max-width: 20rem;">
@@ -1200,24 +1213,57 @@ def market_trends_page():
            <a href="https://github.com/GovLandScout/GovLandScout/tree/main/model" target="_blank" rel="noopener noreferrer">model/README.md</a> in the project's repository.</p>
       </div>
 
-      <script type="application/json" id="txCountiesGeoJSON">{TX_COUNTIES_GEOJSON}</script>
-      <script type="application/json" id="countyPredictionsData">{COUNTY_PREDICTIONS_JSON}</script>
+      <script type="application/json" id="stateCountiesGeoJSON">{state['geojson']}</script>
+      <script type="application/json" id="countyPredictionsData">{state['predictions']}</script>
 
       <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
               integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
       <script>
-        const TX_COUNTIES = JSON.parse(document.getElementById('txCountiesGeoJSON').textContent);
+        const STATE_COUNTIES = JSON.parse(document.getElementById('stateCountiesGeoJSON').textContent);
         const COUNTY_PREDICTIONS = JSON.parse(document.getElementById('countyPredictionsData').textContent);
         const PREDICTIONS_BY_COUNTY = {{}};
         for (const row of COUNTY_PREDICTIONS) {{
           PREDICTIONS_BY_COUNTY[row.county] = row;
         }}
 
-        const trendsMap = L.map('trendsMapContainer').setView([31.0, -99.0], 6);
+        // Locked in place, not pannable/zoomable -- this is a fixed
+        // "whole state at a glance" view, not a general-purpose map, so
+        // drag/scroll/double-click zoom are all off and the view is fit
+        // to the state's own boundary rather than a hand-picked
+        // center/zoom guess. Click and hover (tooltips, the drill-down
+        // panel) still work fine -- those aren't pan/zoom handlers.
+        const trendsMap = L.map('trendsMapContainer', {{
+          dragging: false,
+          scrollWheelZoom: false,
+          doubleClickZoom: false,
+          touchZoom: false,
+          boxZoom: false,
+          keyboard: false,
+          zoomControl: false,
+        }});
         L.tileLayer('https://{{s}}.tile.openstreetmap.org/{{z}}/{{x}}/{{y}}.png', {{
           attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
           maxZoom: 10,
         }}).addTo(trendsMap);
+
+        const stateBounds = L.geoJSON(STATE_COUNTIES).getBounds();
+
+        function lockMapToState() {{
+          trendsMap.invalidateSize();
+          trendsMap.fitBounds(stateBounds, {{padding: [8, 8]}});
+          trendsMap.setMaxBounds(stateBounds.pad(0.05));
+        }}
+
+        // fitBounds needs the container's real pixel size to compute the
+        // right zoom level, and calling it once, inline or on any single
+        // fixed timer/event, proved unreliable -- the container isn't
+        // always at its final size yet at any one fixed point (page load,
+        // a fixed delay after load, etc. all still produced a wrong,
+        // stuck zoom in testing). A ResizeObserver re-runs this every
+        // time the container's actual size changes instead of guessing
+        // when that's "probably" done, so it self-corrects the moment a
+        // real size is available rather than depending on timing at all.
+        new ResizeObserver(lockMapToState).observe(document.getElementById('trendsMapContainer'));
 
         let choroplethLayer = null;
         let selectedCounty = null;
@@ -1314,7 +1360,7 @@ def market_trends_page():
 
           if (choroplethLayer) trendsMap.removeLayer(choroplethLayer);
 
-          choroplethLayer = L.geoJSON(TX_COUNTIES, {{
+          choroplethLayer = L.geoJSON(STATE_COUNTIES, {{
             style: feature => {{
               const row = PREDICTIONS_BY_COUNTY[feature.properties.name];
               return {{
@@ -1365,7 +1411,20 @@ def market_trends_page():
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
           integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="" />
     """
-    return page_shell("GovLandScout - Market Trends (Experimental)", "market-trends", body, extra_head=extra_head)
+    return page_shell(
+        f"GovLandScout - Market Trends: {state['name']} (Experimental)",
+        state["nav_key"], body, extra_head=extra_head,
+    )
+
+
+@app.get("/market-trends", response_class=HTMLResponse)
+def market_trends_tx_page():
+    return render_market_trends_page(MARKET_TRENDS_STATES[0])
+
+
+@app.get("/market-trends-pa", response_class=HTMLResponse)
+def market_trends_pa_page():
+    return render_market_trends_page(MARKET_TRENDS_STATES[1])
 
 
 # Friendly labels for the raw `source` domains stored per listing --

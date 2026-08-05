@@ -6,17 +6,24 @@ price-cut share, and for-sale inventory; FRED's derived unemployment
 rate) into one county-month panel, then engineers the lagged/rolling
 features the model trains on.
 
-Zillow's own CSVs are wide (one column per month-end date); FRED's is
-already long (one row per county-date). Both get reshaped to the same
-long (county, year_month, value) shape before merging, using year-month
-rather than the exact date since Zillow stamps month-*end* dates
-("2018-03-31") and FRED stamps month-*start* ("2018-03-01") for what's
-conceptually the same observation period.
+Zillow's own CSVs are wide (one column per month-end date) and cover
+every state at once; FRED's per-state unemployment file (see
+fetch_data.py) is already long (one row per county-date). Both get
+reshaped to the same long (county, year_month, value) shape before
+merging, using year-month rather than the exact date since Zillow
+stamps month-*end* dates ("2018-03-31") and FRED stamps month-*start*
+("2018-03-01") for what's conceptually the same observation period.
+
+Run with a state key from states.py as the only CLI arg, e.g.
+`python3 build_dataset.py pa` (defaults to tx).
 """
 
+import sys
 from pathlib import Path
 
 import pandas as pd
+
+from states import STATES
 
 DATA_DIR = Path(__file__).parent / "data"
 
@@ -24,9 +31,9 @@ LOOKBACK_MONTHS = 6  # a county needs this much history before its rows are usab
 TARGET_HORIZONS = [1, 3, 6]  # months ahead -- see engineer_features()'s target comment
 
 
-def load_wide_zillow(filename: str, value_name: str) -> pd.DataFrame:
+def load_wide_zillow(filename: str, value_name: str, state_abbrev: str) -> pd.DataFrame:
     df = pd.read_csv(DATA_DIR / filename)
-    df = df[df["State"] == "TX"]
+    df = df[df["State"] == state_abbrev]
     date_cols = [c for c in df.columns if c[:4].isdigit()]
     long = df.melt(
         id_vars=["RegionName"], value_vars=date_cols,
@@ -36,17 +43,17 @@ def load_wide_zillow(filename: str, value_name: str) -> pd.DataFrame:
     return long[["RegionName", "year_month", value_name]]
 
 
-def load_unemployment() -> pd.DataFrame:
-    df = pd.read_csv(DATA_DIR / "unemployment_county.csv")
+def load_unemployment(state_key: str) -> pd.DataFrame:
+    df = pd.read_csv(DATA_DIR / f"unemployment_{state_key}.csv")
     df["year_month"] = pd.to_datetime(df["observation_date"]).dt.to_period("M")
     return df[["RegionName", "year_month", "unemployment_rate"]]
 
 
-def build_panel() -> pd.DataFrame:
-    zhvi = load_wide_zillow("zhvi_county.csv", "zhvi")
-    price_cut = load_wide_zillow("price_cut_county.csv", "price_cut_pct")
-    inventory = load_wide_zillow("inventory_county.csv", "inventory")
-    unemployment = load_unemployment()
+def build_panel(state_key: str, state_abbrev: str) -> pd.DataFrame:
+    zhvi = load_wide_zillow("zhvi_county.csv", "zhvi", state_abbrev)
+    price_cut = load_wide_zillow("price_cut_county.csv", "price_cut_pct", state_abbrev)
+    inventory = load_wide_zillow("inventory_county.csv", "inventory", state_abbrev)
+    unemployment = load_unemployment(state_key)
 
     panel = price_cut.merge(zhvi, on=["RegionName", "year_month"], how="left")
     panel = panel.merge(inventory, on=["RegionName", "year_month"], how="left")
@@ -116,8 +123,11 @@ def engineer_features(panel: pd.DataFrame) -> pd.DataFrame:
 
 
 def main():
-    print("Building county-month panel ...")
-    panel = build_panel()
+    state_key = sys.argv[1] if len(sys.argv) > 1 else "tx"
+    state = STATES[state_key]
+
+    print(f"Building {state['name']} county-month panel ...")
+    panel = build_panel(state_key, state["abbrev"])
     print(f"  {len(panel):,} raw county-month rows, {panel['RegionName'].nunique()} counties")
 
     print("Engineering features ...")
@@ -125,7 +135,7 @@ def main():
     print(f"  {len(dataset):,} usable rows after requiring full feature/target history")
     print(f"  date range: {dataset['year_month'].min()} to {dataset['year_month'].max()}")
 
-    dest = DATA_DIR / "county_month_dataset.csv"
+    dest = DATA_DIR / f"{state_key}_county_month_dataset.csv"
     dataset.to_csv(dest, index=False)
     print(f"Wrote {dest}")
 

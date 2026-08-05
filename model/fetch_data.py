@@ -1,12 +1,16 @@
 """
 GovLandScout model (Phase 1) - Data fetch
 
-Downloads and caches the raw historical data this model trains on:
+Downloads and caches the raw historical data this model trains on, for
+one state at a time (see states.py -- pass its key as the only CLI arg,
+e.g. `python3 fetch_data.py pa`; defaults to tx):
 
 - Three Zillow Research county-level CSVs (home values, price cuts,
-  for-sale inventory). URLs come from zillow.com/research/data/ --
-  Zillow occasionally reshuffles these paths, so if a download starts
-  failing, that's the first thing to check.
+  for-sale inventory). These are nationwide files, not state-specific --
+  URLs come from zillow.com/research/data/, and Zillow occasionally
+  reshuffles these paths, so if a download starts failing, that's the
+  first thing to check. Downloaded once and shared across every state
+  this pipeline runs for; only the per-state filtering happens here.
 - Per-county unemployment/employment level series from FRED, used to
   compute a monthly unemployment rate. FRED doesn't uniformly publish a
   ready-made monthly county *rate* series under a predictable ID (its
@@ -18,6 +22,8 @@ Downloads and caches the raw historical data this model trains on:
   unemployment / (unemployment + employment) * 100, computed locally
   once both are fetched. No API key needed for either source -- FRED's
   plain fredgraph.csv endpoint and Zillow's static CSVs are both public.
+  This part IS state-specific (a different county, a different FIPS
+  code), so it's fetched and cached per state.
 
 Everything lands in data/ (gitignored -- this is raw multi-hundred-county
 data, not something to commit) so re-runs after the first don't
@@ -26,10 +32,13 @@ re-download what's already cached.
 
 import csv
 import io
+import sys
 import time
 from pathlib import Path
 
 import requests
+
+from states import STATES
 
 DATA_DIR = Path(__file__).parent / "data"
 DATA_DIR.mkdir(exist_ok=True)
@@ -62,20 +71,21 @@ def fetch_zillow_datasets() -> None:
         print(f"    {len(resp.content):,} bytes")
 
 
-def texas_counties_with_fips() -> list[tuple[str, str]]:
-    """(RegionName, 5-digit FIPS) for every TX county present in the price-cut
-    dataset -- that's the narrowest of the three Zillow datasets, so it's
-    the real limiting set for which counties end up in the final model."""
+def counties_with_fips(state_abbrev: str) -> list[tuple[str, str]]:
+    """(RegionName, 5-digit FIPS) for every county in this state present in
+    the price-cut dataset -- that's the narrowest of the three Zillow
+    datasets, so it's the real limiting set for which counties end up in
+    the final model."""
     price_cut_names = set()
     with open(DATA_DIR / "price_cut_county.csv", newline="", encoding="utf-8") as f:
         for row in csv.DictReader(f):
-            if row["State"] == "TX":
+            if row["State"] == state_abbrev:
                 price_cut_names.add(row["RegionName"])
 
     counties = []
     with open(DATA_DIR / "zhvi_county.csv", newline="", encoding="utf-8") as f:
         for row in csv.DictReader(f):
-            if row["State"] == "TX" and row["RegionName"] in price_cut_names:
+            if row["State"] == state_abbrev and row["RegionName"] in price_cut_names:
                 fips = row["StateCodeFIPS"] + row["MunicipalCodeFIPS"].zfill(3)
                 counties.append((row["RegionName"], fips))
     return sorted(counties)
@@ -88,8 +98,8 @@ def fetch_fred_series(series_id: str) -> str | None:
     return resp.text
 
 
-def fetch_county_unemployment(counties: list[tuple[str, str]]) -> None:
-    dest = DATA_DIR / "unemployment_county.csv"
+def fetch_county_unemployment(counties: list[tuple[str, str]], state_key: str) -> None:
+    dest = DATA_DIR / f"unemployment_{state_key}.csv"
     if dest.exists():
         print(f"  {dest.name}: already cached, skipping")
         return
@@ -129,15 +139,18 @@ def fetch_county_unemployment(counties: list[tuple[str, str]]) -> None:
 
 
 def main():
-    print("Fetching Zillow datasets ...")
+    state_key = sys.argv[1] if len(sys.argv) > 1 else "tx"
+    state = STATES[state_key]
+
+    print("Fetching Zillow datasets (nationwide, shared across all states) ...")
     fetch_zillow_datasets()
 
-    print("\nDetermining Texas county universe ...")
-    counties = texas_counties_with_fips()
-    print(f"  {len(counties)} TX counties with both ZHVI and price-cut data")
+    print(f"\nDetermining {state['name']} county universe ...")
+    counties = counties_with_fips(state["abbrev"])
+    print(f"  {len(counties)} {state['abbrev']} counties with both ZHVI and price-cut data")
 
-    print("\nFetching FRED unemployment data (per county) ...")
-    fetch_county_unemployment(counties)
+    print(f"\nFetching FRED unemployment data for {state['name']} (per county) ...")
+    fetch_county_unemployment(counties, state_key)
 
     print("\nDone.")
 
