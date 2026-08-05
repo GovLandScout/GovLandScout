@@ -1,0 +1,50 @@
+name: Scheduled scrape (Bid4Assets PA)
+
+# Bid4Assets (see bid4assets_scraper.py's own docstring) is deliberately
+# NOT part of run_daily_scrapers.py / scrape.yml's daily batch: fetching a
+# real address for every property (its list view doesn't include one)
+# across several PA counties running into the thousands of listings does
+# not fit that job's shared ~35-minute budget, and this source is fronted
+# by a WAF with no accessible robots.txt to size a safe request pace
+# against, so it paces itself much more conservatively than any other
+# scraper here. Runs weekly rather than daily -- these are repository/
+# judicial sales, not something that turns over day to day, and it skips
+# re-fetching a property's address once combined_db already has it (see
+# combined_db.fetch_cached_enrichment) -- only genuinely new parcels cost
+# a real detail-page request on any run after the first.
+#
+# Deliberately does NOT call combined_db.record_scrape_result the way
+# run_daily_scrapers.py's scrapers do -- notify.yml's bell reads
+# scrape_runs by MAX(run_started_at) across every row regardless of which
+# job wrote it, so a second, independently-timestamped batch here could
+# get picked up in place of that day's actual full daily run. Success or
+# failure is visible in this workflow's own Actions log instead.
+
+on:
+  schedule:
+    - cron: "0 13 * * 0"  # ~7am US Central on Sundays (adjust for your timezone/DST as needed)
+  workflow_dispatch: {}  # allows manually triggering a run from the Actions tab
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    # Generous on purpose: an initial/cold run can mean several thousand
+    # rate-limited (DETAIL_FETCH_DELAY_SECONDS-paced) detail-page fetches
+    # across every PA county currently listed. Later runs are much faster
+    # once most addresses are cached locally, but this budget is sized for
+    # the slow case, not the steady-state one.
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run Bid4Assets PA scraper
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: python bid4assets_scraper.py

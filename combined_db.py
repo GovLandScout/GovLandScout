@@ -295,6 +295,27 @@ def fetch_home_page_cache(conn: PgConnection) -> dict | None:
     }
 
 
+def fetch_cached_enrichment(
+    conn: PgConnection, state: str, county: str, account_number: str
+) -> tuple[str | None, str | None]:
+    """
+    (address, description) already on file for this listing, or (None,
+    None) if it isn't in the table yet. Exists for scrapers whose per-
+    listing lookup is expensive (e.g. bid4assets_scraper.py's per-property
+    detail-page fetch, needed because its list view has neither field) so
+    a re-run can skip re-fetching a listing it already has this data for --
+    checked against this table specifically, not a local sqlite file,
+    because GitHub Actions runs from a fresh checkout every time (local
+    scraper .db files are gitignored, see .gitignore) while this table is
+    the one thing that actually persists between runs.
+    """
+    row = conn.execute(
+        "SELECT address, description FROM listings WHERE state = ? AND county = ? AND account_number = ?",
+        (state, county, account_number),
+    ).fetchone()
+    return (row[0], row[1]) if row else (None, None)
+
+
 def upsert_listing(
     conn: PgConnection,
     county: str,
