@@ -10,7 +10,7 @@ county's listings silently stop getting map pins again.
 
 import unittest
 
-from geocode_backfill import parse_address
+from geocode_backfill import is_within_state_bounds, parse_address
 
 
 class ParseAddressTests(unittest.TestCase):
@@ -78,6 +78,49 @@ class ParseAddressTests(unittest.TestCase):
 
     def test_dangling_pennsylvania_state_token_is_not_a_city(self):
         self.assertIsNone(parse_address("E Oak St, Pennsylvania 16001", "PA"))
+
+    def test_dangling_state_falls_back_to_county_when_available(self):
+        # As of 2026-08-06: Bid4Assets' Berks and Fayette County listings
+        # are 100% "<street>, PA" with no city at all (confirmed against
+        # 1,467 real Berks listings) -- previously rejected outright,
+        # leaving them with zero geocoding coverage. Falling back to the
+        # county (same treatment the no-comma case already got) recovers
+        # them the same way it already recovered GovEase's Denton listings.
+        self.assertEqual(
+            parse_address("78 RIEGEL LN, PA", "PA", county_fallback="Berks"),
+            ("78 RIEGEL LN", "Berks", "PA", ""),
+        )
+
+    def test_dangling_state_with_no_fallback_still_unusable(self):
+        # Same shape as above, but with no county_fallback available --
+        # must still decline rather than guess at nothing.
+        self.assertIsNone(parse_address("78 RIEGEL LN, PA", "PA"))
+
+
+class IsWithinStateBoundsTests(unittest.TestCase):
+    def test_real_pa_coordinate_is_within_bounds(self):
+        # Camp Hill Borough, Cumberland County, PA.
+        self.assertTrue(is_within_state_bounds("PA", 40.2377, -76.9280))
+
+    def test_texas_mismatch_for_a_pa_listing_is_rejected(self):
+        # Real 2026-08-06 case: a Cumberland County, PA listing's address
+        # ("1605 MAIN STREET, LOWER ALLEN TOWNSHIP, PA", no zip) came back
+        # from the Census geocoder matched near Dallas, TX instead.
+        self.assertFalse(is_within_state_bounds("PA", 33.100285, -96.62863))
+
+    def test_new_york_mismatch_for_a_pa_listing_is_rejected(self):
+        # Real 2026-08-06 case: "...UPPER FRANKFORD TOWNSHIP, PA" matched
+        # to upstate New York.
+        self.assertFalse(is_within_state_bounds("PA", 43.02646, -75.07558))
+
+    def test_real_tx_coordinate_is_within_bounds(self):
+        # Houston, TX.
+        self.assertTrue(is_within_state_bounds("TX", 29.7604, -95.3698))
+
+    def test_unknown_state_is_not_validated(self):
+        # No bounding box defined yet -- can't reject what isn't checkable,
+        # so this must not block a state this hasn't been taught about.
+        self.assertTrue(is_within_state_bounds("OH", 0.0, 0.0))
 
 
 if __name__ == "__main__":

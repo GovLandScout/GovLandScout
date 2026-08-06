@@ -27,6 +27,57 @@ import combined_db
 
 BATCH_GEOCODE_URL = "https://geocoding.geo.census.gov/geocoder/locations/addressbatch"
 
+# Rough (lat_min, lat_max, lon_min, lon_max) boxes, padded past each state's
+# real border rather than drawn tight to it. On 2026-08-06 six real
+# Cumberland County, PA listings ("...LOWER ALLEN TOWNSHIP, PA", "...UPPER
+# FRANKFORD TOWNSHIP, PA" -- no zip code, an uncommon township name rather
+# than an incorporated city) came back from the Census geocoder matched to
+# Texas and upstate New York instead -- a wrong coordinate is worse than no
+# coordinate, since it's silently shown as if it were correct. This isn't
+# validating the geocoder's normal behavior, just catching the rare gross
+# mismatch that lands a "PA" listing hundreds of miles outside Pennsylvania.
+STATE_BOUNDING_BOXES = {
+    "TX": (25.5, 36.6, -107.0, -93.3),
+    "PA": (39.6, 42.3, -80.6, -74.6),
+}
+
+
+def is_within_state_bounds(state: str, latitude: float, longitude: float) -> bool:
+    """True if no bounding box is known for this state -- can't validate what isn't defined, so this only ever
+    rejects a match for a state it actually has a box for (see STATE_BOUNDING_BOXES)."""
+    box = STATE_BOUNDING_BOXES.get(state)
+    if box is None:
+        return True
+    lat_min, lat_max, lon_min, lon_max = box
+    return lat_min <= latitude <= lat_max and lon_min <= longitude <= lon_max
+
+
+def clear_out_of_bounds_coordinates(conn: combined_db.PgConnection) -> int:
+    """
+    Finds listings that already have a stored latitude/longitude landing
+    outside their own state's bounding box -- a wrong geocoder match from
+    before is_within_state_bounds existed, or before an entry was added to
+    STATE_BOUNDING_BOXES -- and clears them back to NULL so fetch_ungeocoded
+    picks them back up in the same run and gets a chance to either find a
+    correct match or, worse case, leave them honestly ungeocoded instead of
+    silently wrong. Runs every time (cheap at this table's current size, and
+    a real safety net if the Census geocoder ever mismatches again), not
+    just once as a one-off migration.
+    """
+    rows = conn.execute("""
+        SELECT county, account_number, state, latitude, longitude FROM listings
+        WHERE latitude IS NOT NULL AND longitude IS NOT NULL
+    """).fetchall()
+
+    cleared = 0
+    for county, account_number, state, latitude, longitude in rows:
+        if not is_within_state_bounds(state, latitude, longitude):
+            print(f"  Clearing out-of-bounds coordinate: {county}, {state} #{account_number} "
+                  f"was ({latitude}, {longitude})")
+            combined_db.update_lat_lon(conn, county, account_number, None, None, state=state)
+            cleared += 1
+    return cleared
+
 
 def fetch_ungeocoded(conn: combined_db.PgConnection) -> list[tuple[str, str, str, str]]:
     """(county, account_number, address, state) for listings with an address but no coordinates."""
@@ -64,16 +115,22 @@ def parse_address(
       - Exactly 2 segments ("<street>, <city>"): treated as street/city with
         a blank zip. Most of these are GovEase listings, whose own site
         never gives more than "<street>, <city>" to begin with.
-      - No comma at all: there's no city in the text either, so the
+      - No comma at all, OR exactly 2 segments where the second is a
+        dangling state token ("<street>, PA" with no real city --
+        Bid4Assets' Berks/Fayette listings are 100% this shape): the
         listing's own county name is used as a stand-in city -- coarser
         than a real one, but the Census geocoder can often still resolve a
         street within a named county, and a wrong guess just comes back
         No_Match rather than a bad coordinate (see geocode_batch). This is
-        what recovers GovEase's Denton listings, whose site gives only a
-        bare street with no city at all.
+        what recovers GovEase's Denton listings (bare street, no city at
+        all) and, as of 2026-08-06, what stopped ~3,000 Bid4Assets PA
+        listings (Berks, Fayette, and -- best-effort, since its "street"
+        is really a township name -- Monroe) from having zero geocoding
+        coverage: they weren't merely missing a zip, "<street>, PA" was
+        being rejected outright as unusable.
 
     Returns None for the minority still too irregular to use even this way
-    -- no street, or a dangling state token where a city should be.
+    -- no street, or a dangling state token with no county to fall back on.
     """
     parts = [p.strip() for p in address.split(",") if p.strip()]
     if not parts or not parts[0]:
@@ -88,8 +145,12 @@ def parse_address(
     if len(parts) >= 2:
         city = parts[1]
         if dangling_pattern.match(city):
-            return None  # "<street>, <State>[ zip]" -- no real city was ever given
-        zip_code = "".join(c for c in parts[2].split()[-1] if c.isdigit())[:5] if len(parts) >= 3 and parts[2].split() else ""
+            if not county_fallback:
+                return None  # "<street>, <State>[ zip]" -- no real city, and nothing to fall back to
+            city = county_fallback
+            zip_code = ""
+        else:
+            zip_code = "".join(c for c in parts[2].split()[-1] if c.isdigit())[:5] if len(parts) >= 3 and parts[2].split() else ""
     elif county_fallback:
         city = county_fallback
         zip_code = ""
@@ -132,6 +193,10 @@ def geocode_batch(csv_text: str) -> dict[str, tuple[float, float]]:
 def main():
     conn = combined_db.get_connection()
 
+    cleared = clear_out_of_bounds_coordinates(conn)
+    if cleared:
+        print(f"Cleared {cleared} listing(s) whose stored coordinates fell outside their own state.")
+
     ungeocoded = fetch_ungeocoded(conn)
     print(f"{len(ungeocoded)} listings have an address but no coordinates.")
 
@@ -158,6 +223,7 @@ def main():
 
     # Census batch endpoint caps a single file at 10,000 records.
     updated = 0
+    rejected = 0
     for i in range(0, len(batch_rows), 10_000):
         chunk = batch_rows[i:i + 10_000]
         csv_text = build_batch_csv(chunk)
@@ -167,10 +233,20 @@ def main():
 
         for unique_id, (lat, lon) in matches.items():
             county, account_number, listing_state = id_to_key[unique_id]
+            if not is_within_state_bounds(listing_state, lat, lon):
+                # See STATE_BOUNDING_BOXES's comment -- a gross mismatch
+                # (real 2026-08-06 case: Cumberland County, PA matched to
+                # Texas and upstate New York) is worse to store than to
+                # leave ungeocoded, so this is treated the same as No_Match.
+                print(f"  REJECTED {county}, {listing_state} #{account_number}: "
+                      f"geocoded to ({lat}, {lon}), outside {listing_state}'s bounds")
+                rejected += 1
+                continue
             combined_db.update_lat_lon(conn, county, account_number, lat, lon, state=listing_state)
             updated += 1
 
-    print(f"Backfilled coordinates for {updated} listings.")
+    print(f"Backfilled coordinates for {updated} listings"
+          + (f" ({rejected} rejected as outside their state's bounds)." if rejected else "."))
     conn.close()
 
 

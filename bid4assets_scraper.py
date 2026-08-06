@@ -40,6 +40,14 @@ scraper in this project:
     number, minimum bid, auction dates) still gets stored for every
     listing either way, so a mid-run block loses address enrichment for
     whatever's left, not the whole run.
+  - Commits every COMMIT_BATCH_SIZE rows, not once per county. On
+    2026-08-06 a once-per-county commit left a transaction open for up to
+    ~an hour on a large county and appears to have made the *live site's*
+    own database connections hang entirely -- cancelling this scraper's
+    run fixed the site within seconds. This isn't optional batching for
+    throughput (see combined_db.upsert_listing's own docstring for that
+    angle); it's what keeps this scraper from taking the rest of the site
+    down with it.
 
 Discovery is dynamic, not a hardcoded county list like govease_scraper.py's
 COUNTIES: bid4assets.com/county-tax-sales lists whichever county auctions
@@ -98,6 +106,19 @@ LIST_API_DELAY_SECONDS = 1.0
 # limiting, a WAF block) is actively stopping this run rather than one-off
 # bad luck, and stop spending more requests on it for the rest of this run.
 MAX_CONSECUTIVE_DETAIL_FAILURES = 8
+
+# commit=False batches writes into one open transaction per
+# combined_db.upsert_listing call (see its docstring -- avoids a
+# round-trip per row across potentially thousands of listings). But on
+# 2026-08-06, committing only once per county left that transaction open
+# for up to ~an hour on a large county (Fayette, DETAIL_FETCH_DELAY_SECONDS-
+# paced), and the live site's own database connections started hanging
+# entirely -- cancelling the run fixed it within seconds, strongly
+# implicating the long-open transaction rather than the scraper's own
+# request volume. Committing every COMMIT_BATCH_SIZE rows instead bounds
+# how long any single transaction can stay open, regardless of how large a
+# county's batch is.
+COMMIT_BATCH_SIZE = 50
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
@@ -273,7 +294,6 @@ def upsert_local(conn: sqlite3.Connection, listing: dict):
 def main():
     conn = sqlite3.connect(DB_PATH)
     init_db(conn)
-    combined_conn = combined_db.get_connection()
     session = requests.Session()
 
     print(f"Fetching {COUNTY_SALES_URL} ...")
@@ -309,7 +329,9 @@ def main():
         active_rows = [r for r in rows if is_still_available(r)]
         print(f"  {county} ({slug}): {len(rows)} listing(s), {len(active_rows)} still available")
 
-        for row in active_rows:
+        combined_conn = combined_db.get_connection()
+
+        for row_index, row in enumerate(active_rows):
             account_number = extract_account_number(row.get("asset_title", ""))
             auction_id = row.get("auctionID")
             minimum_bid = row.get("minimumBid")
@@ -359,10 +381,12 @@ def main():
             )
             total_stored += 1
 
-        combined_conn.commit()  # once per county rather than once at the very end -- bounds how much
-                                  # a mid-run failure (see MAX_CONSECUTIVE_DETAIL_FAILURES) could lose
+            if (row_index + 1) % COMMIT_BATCH_SIZE == 0:
+                combined_conn.commit()
 
-    combined_conn.close()
+        combined_conn.commit()  # flush whatever's left in this county's final partial batch
+        combined_conn.close()
+
     conn.close()
     print(f"\n{total_stored} listing(s) stored into {DB_PATH}")
 

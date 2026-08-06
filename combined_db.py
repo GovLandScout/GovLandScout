@@ -450,7 +450,8 @@ def update_estimated_value(
 
 
 def update_lat_lon(
-    conn: PgConnection, county: str, account_number: str, latitude: float, longitude: float,
+    conn: PgConnection, county: str, account_number: str,
+    latitude: float | None, longitude: float | None,
     state: str = "TX",
 ):
     """
@@ -459,6 +460,9 @@ def update_lat_lon(
     function) because geocode_backfill.py runs across every source/state,
     not just one hardcoded county, so it needs the full key to avoid
     touching the wrong state's same-named county (see upsert_listing).
+    latitude/longitude accept None -- geocode_backfill.py's
+    clear_out_of_bounds_coordinates() uses this to blank out a coordinate
+    it no longer trusts, not just to fill one in.
     """
     now = datetime.now(timezone.utc).isoformat()
     conn.execute(
