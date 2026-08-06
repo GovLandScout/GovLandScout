@@ -295,25 +295,31 @@ def fetch_home_page_cache(conn: PgConnection) -> dict | None:
     }
 
 
-def fetch_cached_enrichment(
-    conn: PgConnection, state: str, county: str, account_number: str
-) -> tuple[str | None, str | None]:
+def fetch_cached_enrichment_bulk(
+    conn: PgConnection, state: str, county: str, account_numbers: list[str]
+) -> dict[str, tuple[str | None, str | None]]:
     """
-    (address, description) already on file for this listing, or (None,
-    None) if it isn't in the table yet. Exists for scrapers whose per-
-    listing lookup is expensive (e.g. bid4assets_scraper.py's per-property
-    detail-page fetch, needed because its list view has neither field) so
-    a re-run can skip re-fetching a listing it already has this data for --
-    checked against this table specifically, not a local sqlite file,
-    because GitHub Actions runs from a fresh checkout every time (local
-    scraper .db files are gitignored, see .gitignore) while this table is
-    the one thing that actually persists between runs.
+    {account_number: (address, description)} for every one of
+    account_numbers already in the table (an entry simply isn't in the
+    returned dict if it isn't in the table yet). One round trip for a
+    whole county's worth of listings, not one per listing -- see
+    bid4assets_scraper.py's module docstring on the 2026-08-06 incident
+    this replaced fetch_cached_enrichment (a one-at-a-time version) to
+    help fix: holding a database connection open across thousands of
+    individually-interleaved DB calls and slow, rate-limited HTTP fetches
+    is what caused it, so that scraper now does all its DB reads for a
+    county in this one call, then closes the connection completely before
+    doing any of the slow network work.
     """
-    row = conn.execute(
-        "SELECT address, description FROM listings WHERE state = ? AND county = ? AND account_number = ?",
-        (state, county, account_number),
-    ).fetchone()
-    return (row[0], row[1]) if row else (None, None)
+    if not account_numbers:
+        return {}
+    placeholders = ",".join(["?"] * len(account_numbers))
+    rows = conn.execute(
+        f"""SELECT account_number, address, description FROM listings
+            WHERE state = ? AND county = ? AND account_number IN ({placeholders})""",
+        (state, county, *account_numbers),
+    ).fetchall()
+    return {r[0]: (r[1], r[2]) for r in rows}
 
 
 def upsert_listing(

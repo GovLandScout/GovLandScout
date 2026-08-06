@@ -27,7 +27,7 @@ scraper in this project:
     (see below) with no stated Crawl-delay to calibrate against.
   - Never re-fetches a property whose address it's already stored --
     checked against combined_db's own `listings` table (see
-    combined_db.fetch_cached_enrichment), not the local
+    combined_db.fetch_cached_enrichment_bulk), not the local
     bid4assets_properties.db, because that local file is gitignored and
     GitHub Actions runs from a fresh checkout every time, so it would be
     empty on every single run regardless of what a previous run found.
@@ -40,14 +40,26 @@ scraper in this project:
     number, minimum bid, auction dates) still gets stored for every
     listing either way, so a mid-run block loses address enrichment for
     whatever's left, not the whole run.
-  - Commits every COMMIT_BATCH_SIZE rows, not once per county. On
-    2026-08-06 a once-per-county commit left a transaction open for up to
-    ~an hour on a large county and appears to have made the *live site's*
-    own database connections hang entirely -- cancelling this scraper's
-    run fixed the site within seconds. This isn't optional batching for
-    throughput (see combined_db.upsert_listing's own docstring for that
-    angle); it's what keeps this scraper from taking the rest of the site
-    down with it.
+  - Never holds a database connection open while doing the slow,
+    rate-limited part of a run. This took two separate incidents on
+    2026-08-06 to actually nail down:
+      1. First attempt held ONE connection open, with commit=False, for
+         an entire county's processing -- up to ~an hour on a large
+         county. The *live site's* own database connections started
+         hanging entirely (its "/" route timed out completely while
+         static pages kept responding fine); cancelling this scraper's
+         run fixed the site within seconds.
+      2. Committing more often (every COMMIT_BATCH_SIZE rows) looked like
+         the fix, but the SAME site hang recurred on the very next run --
+         the connection was still open the whole time between commits,
+         just committing more often didn't change that.
+    The real fix: main()'s per-county loop is now three strictly separate
+    phases -- (1) one bulk DB read for the whole county, connection closed
+    immediately; (2) every slow, rate-limited HTTP request, with no
+    database connection open at all; (3) one DB connection for writing the
+    county's results, closed as soon as writing finishes. The database is
+    now never touched at all during the part of this scraper that's
+    actually slow.
 
 Discovery is dynamic, not a hardcoded county list like govease_scraper.py's
 COUNTIES: bid4assets.com/county-tax-sales lists whichever county auctions
@@ -109,15 +121,11 @@ MAX_CONSECUTIVE_DETAIL_FAILURES = 8
 
 # commit=False batches writes into one open transaction per
 # combined_db.upsert_listing call (see its docstring -- avoids a
-# round-trip per row across potentially thousands of listings). But on
-# 2026-08-06, committing only once per county left that transaction open
-# for up to ~an hour on a large county (Fayette, DETAIL_FETCH_DELAY_SECONDS-
-# paced), and the live site's own database connections started hanging
-# entirely -- cancelling the run fixed it within seconds, strongly
-# implicating the long-open transaction rather than the scraper's own
-# request volume. Committing every COMMIT_BATCH_SIZE rows instead bounds
-# how long any single transaction can stay open, regardless of how large a
-# county's batch is.
+# round-trip per row across potentially thousands of listings). Now that
+# the write phase has no sleep() in it at all (see module docstring), this
+# is purely a throughput optimization, not a safety mechanism -- the
+# entire phase this bounds typically finishes in well under a minute even
+# for a large county.
 COMMIT_BATCH_SIZE = 50
 
 HEADERS = {
@@ -328,17 +336,30 @@ def main():
 
         active_rows = [r for r in rows if is_still_available(r)]
         print(f"  {county} ({slug}): {len(rows)} listing(s), {len(active_rows)} still available")
+        if not active_rows:
+            continue
 
-        combined_conn = combined_db.get_connection()
+        account_numbers = [extract_account_number(r.get("asset_title", "")) for r in active_rows]
 
-        for row_index, row in enumerate(active_rows):
-            account_number = extract_account_number(row.get("asset_title", ""))
+        # Phase 1 (DB, fast): one bulk read for the whole county, connection
+        # closed immediately after -- see module docstring and
+        # fetch_cached_enrichment_bulk's own docstring for why this isn't
+        # one query per listing anymore.
+        read_conn = combined_db.get_connection()
+        cached = combined_db.fetch_cached_enrichment_bulk(read_conn, "PA", county, account_numbers)
+        read_conn.close()
+
+        # Phase 2 (network, slow): every rate-limited HTTP request happens
+        # here, with NO database connection open at all for the whole
+        # phase -- this is the part that can run for tens of minutes on a
+        # large county, and it now touches the database exactly zero times
+        # while doing so.
+        listings = []
+        for row, account_number in zip(active_rows, account_numbers):
             auction_id = row.get("auctionID")
             minimum_bid = row.get("minimumBid")
+            address, description = cached.get(account_number, (None, None))
 
-            address, description = combined_db.fetch_cached_enrichment(
-                combined_conn, "PA", county, account_number
-            )
             if address is None and not circuit_tripped:
                 detail = fetch_auction_detail(session, auction_id)
                 time.sleep(DETAIL_FETCH_DELAY_SECONDS)
@@ -353,7 +374,7 @@ def main():
                     address = detail["address"]
                     description = detail["legal_description"]
 
-            listing = {
+            listings.append({
                 "county": county,
                 "account_number": account_number,
                 "auction_id": auction_id,
@@ -361,10 +382,18 @@ def main():
                 "address": address,
                 "description": description,
                 "source_url": f"{BASE_URL}/auction/{auction_id}" if auction_id else None,
-            }
+            })
+
+        # Phase 3 (DB, fast): one connection for the whole county's writes,
+        # batched commits within it (see COMMIT_BATCH_SIZE) purely to keep
+        # any single commit's own work small, then closed -- there is no
+        # sleep() anywhere in this phase, so it runs in seconds, not
+        # minutes, regardless of how large the county's batch is.
+        write_conn = combined_db.get_connection()
+        for row_index, listing in enumerate(listings):
             upsert_local(conn, listing)
             combined_db.upsert_listing(
-                combined_conn,
+                write_conn,
                 county=listing["county"],
                 account_number=listing["account_number"],
                 precinct=None,
@@ -380,12 +409,10 @@ def main():
                                 # potentially thousands of listings is what already blew a timeout for LGBS
             )
             total_stored += 1
-
             if (row_index + 1) % COMMIT_BATCH_SIZE == 0:
-                combined_conn.commit()
-
-        combined_conn.commit()  # flush whatever's left in this county's final partial batch
-        combined_conn.close()
+                write_conn.commit()
+        write_conn.commit()
+        write_conn.close()
 
     conn.close()
     print(f"\n{total_stored} listing(s) stored into {DB_PATH}")
