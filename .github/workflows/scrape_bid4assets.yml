@@ -47,4 +47,12 @@ jobs:
       - name: Run Bid4Assets PA scraper
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          # Python fully buffers stdout when it isn't attached to a
+          # terminal (true here) -- on 2026-08-05 this run got killed at
+          # the timeout below with literally zero of its print() progress
+          # lines ever flushed to the log, even though it had already
+          # written thousands of real rows to the database by then. This
+          # forces line-by-line flushing so a future timeout still leaves
+          # a readable trail of how far the run actually got.
+          PYTHONUNBUFFERED: "1"
         run: python bid4assets_scraper.py
