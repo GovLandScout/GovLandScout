@@ -82,9 +82,32 @@ class PgConnection:
         self._pool.putconn(self._conn)
 
 
+def _get_live_connection(pool: psycopg2.pool.SimpleConnectionPool):
+    """
+    SimpleConnectionPool doesn't validate a connection before handing it
+    back out on getconn() -- if Neon has dropped a connection that sat
+    idle long enough server-side (confirmed 2026-08-06: bid4assets_scraper.py's
+    ~54-minute idle stretch during its slow per-property HTTP phase, with
+    no query against this connection the whole time), the pool still hands
+    that now-dead connection right back out, and the caller's first real
+    query fails outright with "SSL connection has been closed unexpectedly"
+    instead of a clean reconnect. A cheap SELECT 1 catches that before any
+    real query runs, and discards the dead connection (rather than
+    recycling it back into the pool) so the retry actually gets a live one.
+    """
+    raw_conn = pool.getconn()
+    try:
+        with raw_conn.cursor() as cur:
+            cur.execute("SELECT 1")
+        return raw_conn
+    except psycopg2.OperationalError:
+        pool.putconn(raw_conn, close=True)
+        return pool.getconn()
+
+
 def get_connection() -> PgConnection:
     pool = _get_pool()
-    conn = PgConnection(pool.getconn(), pool)
+    conn = PgConnection(_get_live_connection(pool), pool)
     init_db(conn)
     return conn
 
