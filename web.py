@@ -3,12 +3,14 @@ GovLandScout - Web viewer
 
 FastAPI app that serves every scraped listing across all of this
 project's sources via combined_db.py. The table's default order is
-randomized client-side on each page load (see shuffleInPlace() below) --
-a visitor can still sort by equity, estimated value, or minimum bid via
-the "Sort by" control. Listings missing pricing data (or with no
-independent value estimate at all, like the GSA federal auctions) show
-"No data available" in place of the fields that don't apply, rather than
-being hidden.
+randomized client-side on each page load, with listings that have a full
+equity calculation shuffled to the front ahead of everything else (see
+shuffleWithPricedFirst() below) -- a visitor can still sort by equity,
+estimated value, or minimum bid via the "Sort by" control. Listings
+missing pricing data (or with no independent value estimate at all, like
+the GSA federal auctions) still show, just further down by default, with
+"No data available" in place of the fields that don't apply rather than
+being hidden outright.
 
 Rows are NOT pre-rendered as HTML server-side -- with 4,000+ listings
 that meant shipping a multi-megabyte page and building tens of thousands
@@ -778,12 +780,8 @@ def deals_page():
 
         function shuffleInPlace(arr) {{
           // Fisher-Yates -- every listing an equally likely first impression
-          // rather than always leading with whatever the DB happens to
-          // return first. Runs once per page load, not on every applyFilters()
-          // call -- re-shuffling on every keystroke in the location filter
-          // would make the list jump around while someone's mid-search,
-          // which "Default (random)" reordering itself on every filter
-          // tweak would do if this ran there instead.
+          // within its own tier (see shuffleWithPricedFirst) rather than
+          // always leading with whatever the DB happens to return first.
           for (let i = arr.length - 1; i > 0; i--) {{
             const j = Math.floor(Math.random() * (i + 1));
             [arr[i], arr[j]] = [arr[j], arr[i]];
@@ -791,7 +789,25 @@ def deals_page():
           return arr;
         }}
 
-        const ALL_LISTINGS = shuffleInPlace(JSON.parse(document.getElementById('listingsData').textContent));
+        function shuffleWithPricedFirst(arr) {{
+          // The site's default view is "random order", but a listing
+          // showing "No data available" for equity isn't a good first
+          // impression and shouldn't get equal billing with one a visitor
+          // can actually evaluate. Every listing with a full equity
+          // calculation (real minimum bid AND real estimated value, see
+          // find_deals.py's fetch_all_listings) shuffles into the front of
+          // the page; everything else still shows, still shuffled, just
+          // after. Runs once per page load, not on every applyFilters()
+          // call -- re-shuffling on every keystroke in the location filter
+          // would make the list jump around while someone's mid-search,
+          // which "Default (random)" reordering itself on every filter
+          // tweak would do if this ran there instead.
+          const priced = arr.filter(l => l.equity_pct != null);
+          const unpriced = arr.filter(l => l.equity_pct == null);
+          return [...shuffleInPlace(priced), ...shuffleInPlace(unpriced)];
+        }}
+
+        const ALL_LISTINGS = shuffleWithPricedFirst(JSON.parse(document.getElementById('listingsData').textContent));
         let filteredListings = [];
         let currentPage = 1;
 
