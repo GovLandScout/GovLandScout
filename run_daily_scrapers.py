@@ -30,6 +30,9 @@ SCRAPERS = [
     "houston_landbank_scraper.py", "irs_auction_scraper.py",
     "realauction_scraper.py", "guadalupe_scraper.py",
     "govease_scraper.py", "collin_scraper.py",
+    "montco_scraper.py",  # one PDF, no rate-limiting -- fast enough for the daily batch,
+    # unlike bid4assets_scraper.py (see that module's own docstring for why that one runs
+    # as its own separate weekly job instead)
 ]
 
 # Kept short -- this ends up in a DB row and eventually the bell's

@@ -1466,6 +1466,8 @@ SOURCE_LABELS = {
     "guadalupetx.gov": "Guadalupe County (self-published)",
     "govease.com": "GovEase (county tax sale platform -- TX Sheriff/Constable sales, PA Upset/Judicial sales)",
     "collincountytx.gov": "Collin County Constable Sales (self-published)",
+    "bid4assets.com": "Bid4Assets (PA county tax sale platform -- Upset/Judicial/Repository sales)",
+    "montgomerycountypa.gov": "Montgomery County Tax Claim Bureau (self-published)",
     "manual": "User-submitted (unverified)",
 }
 
