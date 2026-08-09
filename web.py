@@ -1468,6 +1468,7 @@ SOURCE_LABELS = {
     "collincountytx.gov": "Collin County Constable Sales (self-published)",
     "bid4assets.com": "Bid4Assets (PA county tax sale platform -- Upset/Judicial/Repository sales)",
     "montgomerycountypa.gov": "Montgomery County Tax Claim Bureau (self-published)",
+    "chesco.org": "Chester County Tax Claim Bureau (self-published)",
     "manual": "User-submitted (unverified)",
 }
 

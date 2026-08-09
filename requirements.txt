@@ -3,6 +3,7 @@ beautifulsoup4
 fastapi
 uvicorn
 pdfplumber
+openpyxl
 psycopg2-binary
 python-dotenv
 python-multipart
