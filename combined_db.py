@@ -462,18 +462,24 @@ def upsert_historical_listing(
 
 
 def update_estimated_value(
-    conn: PgConnection, county: str, account_number: str, estimated_value: str
+    conn: PgConnection, county: str, account_number: str, estimated_value: str,
+    state: str = "TX",
 ):
     """
     Narrow update for backfill scripts (e.g. hcad_value_backfill.py) that
     enrich an existing listing with a value from a source other than the
     one that originally scraped it -- unlike upsert_listing, this touches
     only estimated_value and doesn't require (or overwrite) every field.
+    Takes `state` (default "TX" so hcad_value_backfill.py's existing
+    Harris-County-only calls don't need updating -- Harris isn't a real
+    county name collision risk, PA has no Harris County) because a PA
+    assessment backfill absolutely is one: Texas has its own Montgomery
+    County too, same reasoning as update_lat_lon's own state param.
     """
     now = datetime.now(timezone.utc).isoformat()
     conn.execute(
-        "UPDATE listings SET estimated_value = ?, last_seen = ? WHERE county = ? AND account_number = ?",
-        (estimated_value, now, county, account_number),
+        "UPDATE listings SET estimated_value = ?, last_seen = ? WHERE state = ? AND county = ? AND account_number = ?",
+        (estimated_value, now, state, county, account_number),
     )
     conn.commit()
 
