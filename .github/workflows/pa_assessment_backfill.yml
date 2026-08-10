@@ -1,0 +1,40 @@
+name: PA assessment value backfill (manual)
+
+# pa_assessment_backfill.py is deliberately manual/occasional, not part of
+# the daily scrape (same reasoning as hcad_value_backfill.py -- assessed
+# values don't change day to day, no benefit to running this on a
+# schedule). This workflow exists only so it can actually be triggered
+# against production without needing a local DATABASE_URL -- no cron
+# trigger on purpose, run it from the Actions tab whenever you want fresh
+# assessment data (e.g. once a year when STATE_CLR_FACTORS' source PDF
+# updates).
+#
+# Unlike bid4assets_scraper.py this does a handful of targeted, batched
+# ArcGIS queries with no per-request rate-limiting delay -- expected to
+# finish in well under a minute even across every configured county, so
+# it doesn't carry that scraper's long-held-connection risk (see that
+# module's docstring for the incident that taught this project to worry
+# about that in the first place).
+
+on:
+  workflow_dispatch: {}
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run PA assessment value backfill
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          PYTHONUNBUFFERED: "1"
+        run: python pa_assessment_backfill.py
