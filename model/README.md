@@ -30,12 +30,16 @@ pipeline for it (see "Running it" below), not new code.
 - **Features**: lagged/rolling price-cut history, ZHVI trend
   (month-over-month and year-over-year % change), for-sale inventory
   and its trend, county unemployment rate (from FRED) and its trend,
-  month-of-year seasonality -- as a sine/cosine pair (`month_sin`/
-  `month_cos`), not the raw 1-12 month number. That raw encoding put
-  December and January, adjacent in reality, about as numerically far
-  apart as two months can be, actively fighting the model on what turned
-  out to be its single most important feature -- see Results below for
-  the before/after.
+  the national 30-year fixed mortgage rate (from FRED, level and
+  month-over-month change) and its trend, month-of-year seasonality --
+  as a sine/cosine pair (`month_sin`/`month_cos`), not the raw 1-12
+  month number. That raw encoding put December and January, adjacent in
+  reality, about as numerically far apart as two months can be, actively
+  fighting the model on what turned out to be its single most important
+  feature -- see Results below for the before/after. The mortgage rate
+  is national, not per-county, like Zillow's ZHVI/price-cut/inventory
+  data itself -- see Results below for a real, mixed finding about
+  whether it actually helped.
 - **Model**: scikit-learn RandomForestRegressor (the production model
   `generate_predictions.py` actually serves), evaluated in
   `train_model.py` against a naive "predict zero change" baseline, a
@@ -72,13 +76,14 @@ pipeline for it (see "Running it" below), not new code.
 Each script takes a state key from `states.py` as its only CLI arg
 (`tx` or `pa`; defaults to `tx` if omitted):
 
-1. `fetch_data.py <state>` -- downloads and caches the raw Zillow CSVs
-   (nationwide, not state-specific -- shared across every state this
-   pipeline runs for, downloaded once) and, per county in that state,
-   FRED's unemployment/employment level series (used to compute a
-   monthly unemployment rate; FRED's own monthly county unemployment
-   *rate* series isn't uniformly published, but the level series behind
-   it are). Caches everything in `data/` (gitignored -- this is
+1. `fetch_data.py <state>` -- downloads and caches the raw Zillow CSVs and
+   FRED's national 30-year mortgage rate series (all three nationwide,
+   not state-specific -- shared across every state this pipeline runs
+   for, downloaded once), plus, per county in that state, FRED's
+   unemployment/employment level series (used to compute a monthly
+   unemployment rate; FRED's own monthly county unemployment *rate*
+   series isn't uniformly published, but the level series behind it
+   are). Caches everything in `data/` (gitignored -- this is
    multi-hundred-county raw data, not something to commit) so re-runs
    don't re-hit either source.
 2. `build_dataset.py <state>` -- joins all of it into one county-month
@@ -124,7 +129,7 @@ python3 generate_predictions.py tx   # updates public/tx_county_predictions.json
 # repeat with "pa" (or any other key added to states.py) for another state
 ```
 
-## Results: Texas (walk-forward cross-validation, 2026-08-10)
+## Results: Texas (walk-forward cross-validation, 2026-08-11)
 
 207 TX counties, ~15,500 county-month training examples spanning 2019-03
 through 2026-06. Evaluated on 4 rolling walk-forward folds per horizon
@@ -135,60 +140,66 @@ month.
 
 | Horizon | Naive MAE | Linear MAE | RF MAE | GB MAE | RF vs. naive | Linear vs. naive | GB vs. naive |
 |---|---|---|---|---|---|---|---|
-| 1 month | 0.0162 ± 0.0013 | 0.0128 ± 0.0015 | 0.0131 ± 0.0008 | 0.0125 ± 0.0006 | 19.0% | 20.6% | **22.5%** |
-| 3 months | 0.0378 ± 0.0067 | 0.0251 ± 0.0025 | 0.0228 ± 0.0028 | 0.0218 ± 0.0026 | 39.7% | 33.6% | **42.2%** |
-| 6 months | 0.0505 ± 0.0059 | 0.0271 ± 0.0057 | 0.0269 ± 0.0069 | 0.0246 ± 0.0048 | 46.8% | 46.4% | **51.2%** |
+| 1 month | 0.0162 ± 0.0013 | 0.0128 ± 0.0011 | 0.0137 ± 0.0006 | 0.0129 ± 0.0004 | 15.5% | 20.6% | **20.3%** |
+| 3 months | 0.0378 ± 0.0067 | 0.0249 ± 0.0011 | 0.0230 ± 0.0023 | 0.0219 ± 0.0026 | 39.1% | 34.0% | **41.9%** |
+| 6 months | 0.0505 ± 0.0059 | 0.0258 ± 0.0019 | 0.0323 ± 0.0116 | 0.0257 ± 0.0064 | 36.1% | **49.0%** | 49.1% |
 
 (± is one standard deviation across the 4 folds -- how consistent each
 model's error was across different stretches of time, not the accuracy
-of a single number.)
+of a single number. These numbers are after adding the national mortgage
+rate as a feature -- see the honest, mixed finding on that below; the
+gradient-boosting-wins-everywhere headline from before this addition no
+longer holds cleanly at 1 month.)
 
-**Gradient boosting wins at every horizon in Texas** -- not by a huge
-margin, but consistently, which the earlier RF-vs-linear-only comparison
-had no way to show. It's a comparison point in this table, not the
-production model `generate_predictions.py` actually serves, though:
-that script's uncertainty estimate is the spread across the random
-forest's independently-bagged trees (see `predict_with_uncertainty()`),
-and gradient boosting's trees are sequential, each correcting the last
--- a spread across *those* wouldn't carry the same "how much do
-independent estimates agree" meaning. Swapping the production model
-means redesigning the uncertainty estimate too, not just picking a
-different regressor; left as a real, separate follow-up rather than
-done here as a side effect.
+**Adding mortgage rate genuinely helped some of these models and
+genuinely hurt one, and the one it hurt is the one actually deployed.**
+At 6 months specifically, the random forest went from beating naive by
+46.8% (before mortgage rate) to just 36.1% -- and its fold-to-fold
+consistency got much worse too (± 0.0116, versus ± 0.0069 before; one
+fold's error nearly doubled). Linear regression and gradient boosting
+both held up fine or improved at 6 months (49.0% and 49.1%, both up from
+before). This isn't a case for reverting the feature -- `mortgage_rate`
+and `mortgage_rate_mom_change` clearly carry real signal (see feature
+importances below), and the *other* two models used it well -- but it's
+a real, documented reason the production random forest's 6-month Texas
+call should be read with extra caution right now, on top of the
+calibration caveat below. Whether that's fixable by retuning the random
+forest's own hyperparameters for the larger feature set, or is a sign
+the production model choice deserves revisiting per-horizon rather than
+fixed at "always random forest," is real follow-up work this table makes
+concrete rather than a vague TODO.
 
 Feature importances (production models, fit on all available data):
 
 - **`month_sin`/`month_cos` together are still the dominant features at
-  every horizon**, and at 3 and 6 months `month_sin` alone (37% and 36%
-  respectively) is now a *larger* single share of importance than the
-  old raw `month_of_year` ever reached (43-47%) -- the cyclic encoding
-  isn't just theoretically more correct, the model leans on it more
-  directly once it's actually easy to use.
-- **`zhvi_yoy_pct` (year-over-year home value trend) still grows with
-  horizon**: 8% at 1 month, 7% at 3, 13% at 6 -- short-term movement
-  stays noisier/more seasonal, longer-term movement leans more on the
-  broader home-value trend having time to play out, same story as
-  before this change.
-- `price_cut_pct` itself (current level) shows the same pattern (3% ->
-  14% -> 16%) -- plausible mean-reversion, see the Clay County case
-  study below for a concrete example of exactly this.
-- Unemployment features stay modest, though `unemployment_rate_mom_change`
-  (not just the level) is a real presence at the 1-month horizon (8%) --
-  a recent shift in local unemployment apparently carries some
-  short-term signal the level alone doesn't.
+  every horizon.**
+- **`mortgage_rate`/`mortgage_rate_mom_change` are a real, if secondary,
+  presence at every horizon** -- 7-9% combined at 1 and 3 months, and at
+  6 months `mortgage_rate_mom_change` alone is the *second*-most
+  important feature in the whole model (14%), ahead of every ZHVI and
+  unemployment feature. A recent shift in national borrowing costs
+  apparently carries real signal about a county's price-cut trajectory
+  6 months out -- consistent with the 6-month MAE finding above, even
+  though that finding is about the random forest specifically
+  struggling to generalize it, not about the feature lacking real signal.
+- `price_cut_pct` itself (current level) still shows a mean-reversion
+  pattern across horizons -- see the Clay County case study below for a
+  concrete example.
+- Unemployment features stay modest across horizons, similar to before
+  this change.
 
-**Uncertainty calibration**: only 40-43% of actual outcomes fell within
-the random forest's predicted ±1 std band across the three horizons
-(target for a well-calibrated Gaussian-shaped spread: ~68%), and 68-73%
-within ±2 std (target: ~95%). **The band is meaningfully overconfident**
--- narrower than the model's real uncertainty, not just imprecise. The
+**Uncertainty calibration**: 36-42% of actual outcomes fell within the
+random forest's predicted ±1 std band across the three horizons (target
+for a well-calibrated Gaussian-shaped spread: ~68%), and 69-71% within
+±2 std (target: ~95%) -- similar to before mortgage rate was added, if
+slightly worse at 6 months specifically (36% vs. 43% before), consistent
+with that horizon's random forest also having gotten less accurate and
+less consistent above. **The band is meaningfully overconfident** --
+narrower than the model's real uncertainty, not just imprecise. The
 reduced-opacity/± range shown on `/market-trends` should be read as "the
-model is less sure than it looks," not taken at face value; tightening
-this up (a larger ensemble, conformal prediction, or simply widening the
-reported band by a calibration factor derived from this check) is real
-follow-up work this measurement makes concrete instead of a vague TODO.
+model is less sure than it looks," not taken at face value.
 
-## Results: Pennsylvania (walk-forward cross-validation, 2026-08-10)
+## Results: Pennsylvania (walk-forward cross-validation, 2026-08-11)
 
 66 PA counties, ~5,300-5,400 county-month training examples (fewer than
 Texas simply because Pennsylvania has far fewer counties -- 67 total vs.
@@ -197,66 +208,124 @@ setup.
 
 | Horizon | Naive MAE | Linear MAE | RF MAE | GB MAE | RF vs. naive | Linear vs. naive | GB vs. naive |
 |---|---|---|---|---|---|---|---|
-| 1 month | 0.0184 ± 0.0028 | 0.0119 ± 0.0003 | 0.0129 ± 0.0009 | 0.0125 ± 0.0007 | 29.6% | **35.2%** | 32.1% |
-| 3 months | 0.0379 ± 0.0032 | 0.0243 ± 0.0036 | 0.0239 ± 0.0035 | 0.0230 ± 0.0032 | 37.0% | 35.9% | **39.3%** |
-| 6 months | 0.0518 ± 0.0151 | 0.0240 ± 0.0043 | 0.0272 ± 0.0054 | 0.0264 ± 0.0069 | 47.4% | **53.6%** | 49.0% |
+| 1 month | 0.0184 ± 0.0028 | 0.0118 ± 0.0004 | 0.0128 ± 0.0004 | 0.0124 ± 0.0002 | 30.6% | **35.7%** | 32.9% |
+| 3 months | 0.0379 ± 0.0032 | 0.0232 ± 0.0020 | 0.0219 ± 0.0012 | 0.0213 ± 0.0013 | 42.2% | 38.9% | **43.9%** |
+| 6 months | 0.0518 ± 0.0151 | 0.0224 ± 0.0010 | 0.0240 ± 0.0019 | 0.0223 ± 0.0026 | 53.6% | 56.7% | **56.9%** |
 
-Same pattern as before this change, still worth taking at face value:
-**linear regression wins at 1 and 6 months in Pennsylvania**, gradient
-boosting wins at 3 months, and the random forest -- the one actually
-deployed -- is never the best of the three here. With a third as many
-counties and a smaller, more geographically compact state, PA's 6-month
-fold error is also far less consistent (± 0.0151-0.0069, the widest
-spreads of any horizon/state combination here) -- a smaller, noisier
-dataset is a plausible reason the more flexible models have a harder
-time earning their extra complexity back. Feature importances follow the
-same seasonality-dominant shape as Texas (`month_sin`/`month_cos`
-together 48-65% across horizons, `month_cos` specifically dominant at 1
-and 3 months, `month_sin` dominant at 6 -- which component leads
-apparently isn't fixed, just that the pair together carries most of the
-signal either way).
+**Unlike Texas, mortgage rate was a clean win across the board in
+Pennsylvania.** Every model improved at every horizon compared to before
+this feature was added -- the random forest's 3-month score alone jumped
+from 37.0% to 42.2% vs. naive, and 6-month from 47.4% to 53.6%.
+Calibration improved too (see below). Linear regression still wins at 1
+and 6 months and gradient boosting at 3, same pattern as before this
+change, but the random forest -- the one actually deployed -- is
+genuinely closer to competitive here than it was, and closer than it is
+in Texas right now. With a third as many counties and a smaller, more
+geographically compact state, PA's 6-month fold error is also still the
+least consistent of any horizon/state combination here (± up to 0.0151)
+-- a smaller, noisier dataset is a plausible reason the more flexible
+models have a harder time earning their extra complexity back, though
+less so now than before mortgage rate was added. Feature importances
+follow the same seasonality-dominant shape as Texas (`month_sin`/
+`month_cos` together 46-83% across horizons), with `mortgage_rate`/
+`mortgage_rate_mom_change` a modest but real presence throughout (7-8%
+combined at every horizon, similar magnitude to Texas).
 
-**Uncertainty calibration**: 45-51% coverage within ±1 std (target
-~68%), 79-86% within ±2 std (target ~95%) -- overconfident like Texas,
-though somewhat less severely and improving slightly with horizon (45%
--> 51% -> 51%). Same conclusion as Texas: real uncertainty exists beyond
-what the current band shows.
+**Uncertainty calibration**: 45-55% coverage within ±1 std (target
+~68%), 79-85% within ±2 std (target ~95%) -- still overconfident, but
+improved from before mortgage rate was added at 3 and 6 months
+specifically (51%->55% and 51%->55%), the opposite direction from
+Texas's slight 6-month regression above. Same overall conclusion as
+Texas, just less severe: real uncertainty exists beyond what the current
+band shows.
+
+**Why the same feature helped one state and hurt the other's deployed
+model isn't fully explained here** -- a real, open question rather than
+a loose end papered over. Plausible contributors: Pennsylvania's smaller
+dataset may simply have had more room to gain from an informative
+national-level feature that adds the same value to every county-month
+row, while Texas's random forest, already fit against many more county-
+month combinations, may have found spurious mortgage-rate-correlated
+splits in some of its 254 fairly different county subpopulations that
+didn't generalize the same way forward. That's a hypothesis, not a
+verified explanation -- worth real investigation before concluding much
+more than "the effect isn't uniform and shouldn't be assumed to be."
 
 ## Case study: Clay County
 
 The single largest predicted move in the current output (see
-`public/tx_county_predictions.json`) is Clay County's 6-month horizon:
-a projected **-11.9 point** drop in price-cut share, from a current
-29.7% down toward roughly 18%. (This replaces an earlier version of this
-case study built around Andrews County -- the cyclic month encoding and
-retrained models above changed which county's move actually ranks
-largest; Andrews no longer does.)
+`public/tx_county_predictions.json`) is still Clay County's 6-month
+horizon, same county as before mortgage rate was added, though a smaller
+call now: a projected **-7.9 point** drop in price-cut share, from a
+current 29.7% down toward roughly 22% (previously a -11.9 point call
+toward roughly 18%, before this feature was added).
 
-Its actual history explains why, same shape as the county this case
-study used to be about: Clay sat in a 22-25% band through most of 2025,
-dropped to a recent low of 10.6% in January 2026 -- then spiked hard:
-13.0% (Feb) -> 14.6% (Mar) -> 21.3% (Apr) -> 25.7% (May) -> 29.7% (Jun
-2026), nearly tripling in five months. That's a sharp, unusual move for
-a county that had otherwise been comparatively range-bound.
+Its actual history explains why: Clay sat in a 22-25% band through most
+of 2025, dropped to a recent low of 10.6% in January 2026 -- then spiked
+hard: 13.0% (Feb) -> 14.6% (Mar) -> 21.3% (Apr) -> 25.7% (May) -> 29.7%
+(Jun 2026), nearly tripling in five months. That's a sharp, unusual move
+for a county that had otherwise been comparatively range-bound.
 
 The model isn't predicting Clay keeps climbing -- it's betting on
-reversion, and the shape of that bet is gradual, not abrupt: essentially
-flat at 1 month (-1.3 points), a modest pullback at 3 months (-4.7
-points), and the large -11.9 point call only shows up at 6 months. The
-uncertainty band on that 6-month number is ±2.5 points -- given the
-calibration finding above, treat that as an understatement of the real
-uncertainty, not a tight, trustworthy bound. Whether the call is *right*
-isn't knowable yet (2026-12 data doesn't exist yet); what's checkable
-today is that the prediction is legible and tied to a real, visible
-pattern in the underlying data rather than an opaque number -- which is
-the whole point of shipping the drill-down chart on `/market-trends`
-alongside the map.
+reversion, gradually: essentially flat at 1 month (-1.0 points), a
+modest pullback at 3 months (-4.6 points), and the largest call, -7.9
+points, only shows up at 6 months. The uncertainty band on that 6-month
+number is now ±3.0 points (wider than the ±2.5 points before mortgage
+rate was added -- consistent with the 6-month random forest's own
+accuracy and calibration both having gotten somewhat worse, per the
+Results section above). Given the calibration finding, treat even this
+wider band as an understatement of the real uncertainty, not a tight,
+trustworthy bound. Whether the call is *right* isn't knowable yet
+(2026-12 data doesn't exist yet); what's checkable today is that the
+prediction is legible and tied to a real, visible pattern in the
+underlying data rather than an opaque number -- which is the whole point
+of shipping the drill-down chart on `/market-trends` alongside the map.
 
-Next natural step: GovLandScout's own scraped listing history now spans
-several months and multiple states (Texas and, as of this month,
-Pennsylvania across six different scraped sources -- see the main
-project README's commit history). Once it has enough months behind it
-to compute county-level rolling features from (mirroring what this model
-already does with Zillow's price-cut data), it becomes a candidate to
-fold in as an additional feature -- or, further out, a target in its own
-right.
+## Considered but not built: private mortgage foreclosure statistics
+
+A natural next feature to ask about, and worth documenting why it isn't
+here: granular (county-level, monthly) private-lender foreclosure data
+is a genuinely commercial product. ATTOM Data Solutions and CoreLogic
+both maintain exactly this kind of dataset (ATTOM specifically covers
+~3,000 counties), but both are paid/licensed -- no free tier, no public
+bulk download, no API key away from a sales conversation, checked
+directly against ATTOM's own site before writing this. That rules out
+the "just another FRED/Zillow CSV" pattern every other feature in this
+pipeline uses.
+
+A free option does exist -- FRED's `DRSFRMACBS` ("Delinquency Rate on
+Single-Family Residential Mortgages, Booked in Domestic Offices, All
+Commercial Banks"), same no-API-key `fredgraph.csv` pattern as the
+mortgage rate feature above -- but it's **national only and quarterly**,
+not county-level and not monthly. Given this model already has one
+national-only feature (mortgage rate) whose value just turned out to be
+genuinely mixed by state, and every other feature here is county-level
+and monthly, a second coarse national series is unlikely to earn its
+keep without evidence otherwise; not added without that evidence.
+
+The genuinely useful version -- granular, county-level, monthly, free --
+doesn't appear to exist as a ready-made dataset. The closest realistic
+path is public records: foreclosure filings are public court/recording
+documents in both Texas and Pennsylvania, so county-by-county scraping
+is *possible* in principle, the same category of work as this project's
+own tax-sale scrapers (see the main project's `realauction_scraper.py`
+and `bid4assets_scraper.py`, and note Allegheny County, PA's own Sheriff
+Sale data already mixes "Mortgage Foreclosure" and tax-lien sale types
+in one feed, confirmed while researching PA tax sale sources for the
+scraper side of this project). That's real, standalone scraper-building
+work per county, not a quick model feature the way mortgage rate was --
+a candidate for its own future project, not a follow-up to this one.
+
+## Next steps
+
+GovLandScout's own scraped listing history now spans several months and
+multiple states (Texas and, as of this month, Pennsylvania across six
+different scraped sources -- see the main project README's commit
+history). Once it has enough months behind it to compute county-level
+rolling features from (mirroring what this model already does with
+Zillow's price-cut data), it becomes a candidate to fold in as an
+additional feature -- or, further out, a target in its own right.
+Retuning the random forest's hyperparameters for the now-larger feature
+set (see the Texas 6-month finding above) and investigating the
+state-specific mortgage-rate effect are both now concrete, evidence-
+backed follow-ups rather than open-ended ideas.

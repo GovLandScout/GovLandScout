@@ -42,6 +42,7 @@ FEATURE_COLS = [
     "price_cut_pct", "price_cut_pct_lag1", "price_cut_pct_lag3", "price_cut_pct_lag6",
     "price_cut_pct_roll3", "zhvi_mom_pct", "zhvi_yoy_pct", "inventory_mom_pct",
     "inventory_level", "unemployment_rate", "unemployment_rate_mom_change",
+    "mortgage_rate", "mortgage_rate_mom_change",
     "month_sin", "month_cos",  # see build_dataset.py's engineer_features() for why not a raw month number
 ]
 

@@ -53,6 +53,13 @@ ZILLOW_DATASETS = {
 FRED_CSV_URL = "https://fred.stlouisfed.org/graph/fredgraph.csv"
 FRED_REQUEST_DELAY_SECONDS = 0.3  # courtesy pacing across ~400+ requests, not a stated FRED requirement
 
+# Freddie Mac's weekly (Thursday) national average 30-year fixed mortgage
+# rate, published on FRED under a fixed series ID -- national, not
+# per-county like the unemployment series below, so fetched once and
+# shared across every state this pipeline runs for, same as the Zillow
+# datasets rather than the per-county FRED loop.
+MORTGAGE_RATE_SERIES_ID = "MORTGAGE30US"
+
 HEADERS = {
     "User-Agent": "GovLandScout-SchoolProject/1.0 (contact: your-email@example.com)"
 }
@@ -69,6 +76,19 @@ def fetch_zillow_datasets() -> None:
         resp.raise_for_status()
         dest.write_bytes(resp.content)
         print(f"    {len(resp.content):,} bytes")
+
+
+def fetch_mortgage_rate() -> None:
+    dest = DATA_DIR / "mortgage_rate.csv"
+    if dest.exists():
+        print(f"  {dest.name}: already cached, skipping")
+        return
+    print(f"  Fetching {MORTGAGE_RATE_SERIES_ID} ...")
+    csv_text = fetch_fred_series(MORTGAGE_RATE_SERIES_ID)
+    if csv_text is None:
+        raise RuntimeError(f"FRED series {MORTGAGE_RATE_SERIES_ID} not available -- check the series ID is still current")
+    dest.write_text(csv_text)
+    print(f"    {len(csv_text):,} bytes")
 
 
 def counties_with_fips(state_abbrev: str) -> list[tuple[str, str]]:
@@ -144,6 +164,9 @@ def main():
 
     print("Fetching Zillow datasets (nationwide, shared across all states) ...")
     fetch_zillow_datasets()
+
+    print("\nFetching national mortgage rate (shared across all states) ...")
+    fetch_mortgage_rate()
 
     print(f"\nDetermining {state['name']} county universe ...")
     counties = counties_with_fips(state["abbrev"])

@@ -50,15 +50,32 @@ def load_unemployment(state_key: str) -> pd.DataFrame:
     return df[["RegionName", "year_month", "unemployment_rate"]]
 
 
+def load_mortgage_rate() -> pd.DataFrame:
+    """National, not per-county -- fetch_data.py's fetch_mortgage_rate()
+    caches Freddie Mac's weekly (Thursday) series as-is; averaged here to
+    one value per month (rather than, say, just the last weekly reading)
+    so a single unusual week doesn't dominate a whole month's feature
+    value the way picking one reading could."""
+    df = pd.read_csv(DATA_DIR / "mortgage_rate.csv")
+    df["year_month"] = pd.to_datetime(df["observation_date"]).dt.to_period("M")
+    monthly = df.groupby("year_month")["MORTGAGE30US"].mean().reset_index()
+    return monthly.rename(columns={"MORTGAGE30US": "mortgage_rate"})
+
+
 def build_panel(state_key: str, state_abbrev: str) -> pd.DataFrame:
     zhvi = load_wide_zillow("zhvi_county.csv", "zhvi", state_abbrev)
     price_cut = load_wide_zillow("price_cut_county.csv", "price_cut_pct", state_abbrev)
     inventory = load_wide_zillow("inventory_county.csv", "inventory", state_abbrev)
     unemployment = load_unemployment(state_key)
+    mortgage_rate = load_mortgage_rate()
 
     panel = price_cut.merge(zhvi, on=["RegionName", "year_month"], how="left")
     panel = panel.merge(inventory, on=["RegionName", "year_month"], how="left")
     panel = panel.merge(unemployment, on=["RegionName", "year_month"], how="left")
+    # year_month only, not RegionName -- every county in the state shares
+    # the same national mortgage rate for a given month, unlike the
+    # per-county sources above.
+    panel = panel.merge(mortgage_rate, on="year_month", how="left")
     return panel.sort_values(["RegionName", "year_month"]).reset_index(drop=True)
 
 
@@ -97,6 +114,14 @@ def engineer_features(panel: pd.DataFrame) -> pd.DataFrame:
 
         g["unemployment_rate_mom_change"] = g["unemployment_rate"].diff(1)
 
+        # mortgage_rate itself is already a column here (see
+        # build_panel()'s merge) -- just adding its month-over-month
+        # change, same pairing every other macro feature already gets.
+        # It's identical across every county for a given month, so
+        # .diff(1) is really tracking the *national* rate's own movement,
+        # not anything county-specific.
+        g["mortgage_rate_mom_change"] = g["mortgage_rate"].diff(1)
+
         # Not the raw month number (1-12) -- that encoding puts December
         # and January, adjacent in reality, about as far apart as two
         # months can be numerically, which actively fights the model on
@@ -119,6 +144,7 @@ def engineer_features(panel: pd.DataFrame) -> pd.DataFrame:
         "price_cut_pct", "price_cut_pct_lag1", "price_cut_pct_lag3", "price_cut_pct_lag6",
         "price_cut_pct_roll3", "zhvi_mom_pct", "zhvi_yoy_pct", "inventory_mom_pct",
         "inventory_level", "unemployment_rate", "unemployment_rate_mom_change",
+        "mortgage_rate", "mortgage_rate_mom_change",
         "month_sin", "month_cos",
     ]
     target_cols = [f"target_change_{h}m" for h in TARGET_HORIZONS]
