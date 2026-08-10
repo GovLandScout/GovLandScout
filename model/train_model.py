@@ -44,8 +44,9 @@ import sys
 from pathlib import Path
 
 import joblib
+import numpy as np
 import pandas as pd
-from sklearn.ensemble import RandomForestRegressor
+from sklearn.ensemble import HistGradientBoostingRegressor, RandomForestRegressor
 from sklearn.linear_model import LinearRegression
 from sklearn.metrics import mean_absolute_error
 
@@ -59,12 +60,39 @@ CV_TEST_WINDOW_MONTHS = 3
 FEATURE_COLS = [
     "price_cut_pct", "price_cut_pct_lag1", "price_cut_pct_lag3", "price_cut_pct_lag6",
     "price_cut_pct_roll3", "zhvi_mom_pct", "zhvi_yoy_pct", "inventory_mom_pct",
-    "inventory_level", "unemployment_rate", "unemployment_rate_mom_change", "month_of_year",
+    "inventory_level", "unemployment_rate", "unemployment_rate_mom_change",
+    "month_sin", "month_cos",
 ]
 
 
 def make_random_forest() -> RandomForestRegressor:
     return RandomForestRegressor(n_estimators=300, max_depth=10, min_samples_leaf=5, random_state=42, n_jobs=-1)
+
+
+def make_gradient_boosting() -> HistGradientBoostingRegressor:
+    # Added as a third CV comparison point alongside the random forest and
+    # linear regression, not a production-model swap: generate_predictions.py's
+    # uncertainty estimate (see predict_with_uncertainty() below) depends on
+    # averaging across many *independently* bagged trees, which is what
+    # RandomForestRegressor's estimators_ actually are. HistGradientBoostingRegressor's
+    # trees are sequential and each corrects the last, so a spread across
+    # them wouldn't carry the same "how much do independent trees agree"
+    # meaning -- swapping production models would mean redesigning
+    # uncertainty quantification too, not just picking a different
+    # regressor, so that's left as a separate decision for later.
+    return HistGradientBoostingRegressor(max_depth=6, learning_rate=0.05, max_iter=300, random_state=42)
+
+
+def predict_with_uncertainty(model: RandomForestRegressor, X: pd.DataFrame) -> tuple[np.ndarray, np.ndarray]:
+    """Mean prediction plus the standard deviation across the forest's
+    individual trees -- see generate_predictions.py, which uses this same
+    approach in production. Duplicated here (rather than imported) because
+    train_model.py needs it to check *whether that uncertainty estimate is
+    actually trustworthy* -- see evaluate_fold()'s coverage calculation --
+    which generate_predictions.py has no reason to do itself."""
+    X_values = X.values
+    tree_predictions = np.array([tree.predict(X_values) for tree in model.estimators_])
+    return tree_predictions.mean(axis=0), tree_predictions.std(axis=0)
 
 
 def walk_forward_folds(months: list, n_folds: int, test_window: int) -> list[tuple[list, list]]:
@@ -88,13 +116,40 @@ def evaluate_fold(train_df: pd.DataFrame, test_df: pd.DataFrame, target_col: str
 
     rf = make_random_forest()
     rf.fit(X_train, y_train)
-    rf_mae = mean_absolute_error(y_test, rf.predict(X_test))
+    # mean/std together rather than a plain rf.predict(): the MAE below
+    # only needs the mean, but the coverage check right after needs the
+    # per-row std too, and fitting a second time just to get it back would
+    # waste half the CV's tree-fitting work for no reason.
+    rf_pred_mean, rf_pred_std = predict_with_uncertainty(rf, X_test)
+    rf_mae = mean_absolute_error(y_test, rf_pred_mean)
+
+    # Is the tree-spread uncertainty generate_predictions.py ships to
+    # /market-trends actually trustworthy, or just a number that looks
+    # sciencey? A well-calibrated Gaussian-shaped spread should cover the
+    # true outcome within +/-1 std about 68% of the time and +/-2 std
+    # about 95% -- rates well below that mean the band is overconfident
+    # (too narrow), well above means it's overcautious (too wide).
+    residuals = (y_test.to_numpy() - rf_pred_mean)
+    abs_residuals = np.abs(residuals)
+    # A handful of rows can have rf_pred_std == 0 (every tree in the
+    # forest happened to agree exactly) -- coverage at that row is just
+    # whether the prediction was exact, not a divide-by-zero.
+    coverage_1std = float(np.mean(abs_residuals <= rf_pred_std))
+    coverage_2std = float(np.mean(abs_residuals <= 2 * rf_pred_std))
+
+    gb = make_gradient_boosting()
+    gb.fit(X_train, y_train)
+    gb_mae = mean_absolute_error(y_test, gb.predict(X_test))
 
     lr = LinearRegression()
     lr.fit(X_train, y_train)
     lr_mae = mean_absolute_error(y_test, lr.predict(X_test))
 
-    return {"naive_mae": naive_mae, "rf_mae": rf_mae, "lr_mae": lr_mae, "test_rows": len(test_df)}
+    return {
+        "naive_mae": naive_mae, "rf_mae": rf_mae, "lr_mae": lr_mae, "gb_mae": gb_mae,
+        "rf_coverage_1std": coverage_1std, "rf_coverage_2std": coverage_2std,
+        "test_rows": len(test_df),
+    }
 
 
 def cross_validate(dataset: pd.DataFrame, horizon: int) -> list[dict]:
@@ -153,17 +208,26 @@ def main():
         folds = cross_validate(dataset, horizon)
         print(f"\n{N_CV_FOLDS}-fold walk-forward cross-validation "
               f"({CV_TEST_WINDOW_MONTHS}-month test windows each):\n")
-        print(f"{'Test months':<20}{'Rows':<8}{'Naive MAE':<12}{'Linear MAE':<13}{'RF MAE':<10}")
+        print(f"{'Test months':<20}{'Rows':<8}{'Naive MAE':<12}{'Linear MAE':<13}{'RF MAE':<10}{'GB MAE':<10}")
         for r in folds:
-            print(f"{r['test_range']:<20}{r['test_rows']:<8}{r['naive_mae']:<12.4f}{r['lr_mae']:<13.4f}{r['rf_mae']:<10.4f}")
+            print(f"{r['test_range']:<20}{r['test_rows']:<8}{r['naive_mae']:<12.4f}"
+                  f"{r['lr_mae']:<13.4f}{r['rf_mae']:<10.4f}{r['gb_mae']:<10.4f}")
 
         naive_mean, naive_std = summarize(folds, "naive_mae")
         lr_mean, lr_std = summarize(folds, "lr_mae")
         rf_mean, rf_std = summarize(folds, "rf_mae")
+        gb_mean, gb_std = summarize(folds, "gb_mae")
         print(f"\n{'Mean ± std':<20}{'':<8}{naive_mean:.4f}±{naive_std:.4f}  "
-              f"{lr_mean:.4f}±{lr_std:.4f}  {rf_mean:.4f}±{rf_std:.4f}")
+              f"{lr_mean:.4f}±{lr_std:.4f}  {rf_mean:.4f}±{rf_std:.4f}  {gb_mean:.4f}±{gb_std:.4f}")
         print(f"\nRandom forest beats naive by {1 - rf_mean / naive_mean:.1%} on average across folds, "
-              f"linear regression by {1 - lr_mean / naive_mean:.1%}.")
+              f"linear regression by {1 - lr_mean / naive_mean:.1%}, "
+              f"gradient boosting by {1 - gb_mean / naive_mean:.1%}.")
+
+        cov1_mean, _ = summarize(folds, "rf_coverage_1std")
+        cov2_mean, _ = summarize(folds, "rf_coverage_2std")
+        print(f"\nRandom forest uncertainty calibration (see predict_with_uncertainty()): "
+              f"{cov1_mean:.0%} of actual outcomes fell within the predicted ±1 std band "
+              f"(well-calibrated target: ~68%), {cov2_mean:.0%} within ±2 std (target: ~95%).")
 
         production = fit_production_model(dataset, horizon, state_key)
         print(f"\nProduction model trained on all {production['rows']:,} available rows "

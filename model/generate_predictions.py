@@ -41,7 +41,8 @@ HISTORY_MONTHS = 24  # how much trailing history to ship per county for the dril
 FEATURE_COLS = [
     "price_cut_pct", "price_cut_pct_lag1", "price_cut_pct_lag3", "price_cut_pct_lag6",
     "price_cut_pct_roll3", "zhvi_mom_pct", "zhvi_yoy_pct", "inventory_mom_pct",
-    "inventory_level", "unemployment_rate", "unemployment_rate_mom_change", "month_of_year",
+    "inventory_level", "unemployment_rate", "unemployment_rate_mom_change",
+    "month_sin", "month_cos",  # see build_dataset.py's engineer_features() for why not a raw month number
 ]
 
 # Zillow's county names and the Census geometry's names match exactly
@@ -66,7 +67,11 @@ def predict_with_uncertainty(model, X: pd.DataFrame) -> tuple[np.ndarray, np.nda
     standard deviation across the forest's individual trees -- a real,
     (almost) free uncertainty estimate a single-model forecast doesn't
     have on its own. Trees that broadly agree imply a more reliable
-    prediction than trees that are all over the place for that row."""
+    prediction than trees that are all over the place for that row.
+    Whether this spread is actually trustworthy (i.e. calibrated, not just
+    a number that looks sciencey) is checked in train_model.py's own copy
+    of this function -- see its evaluate_fold() coverage calculation and
+    model/README.md's "Uncertainty calibration" results."""
     # .values, not the DataFrame itself -- each tree was fit as part of the
     # ensemble without its own column-name tracking, and predicting from a
     # named DataFrame directly against it is a harmless but noisy mismatch

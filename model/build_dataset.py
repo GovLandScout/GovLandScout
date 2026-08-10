@@ -21,6 +21,7 @@ Run with a state key from states.py as the only CLI arg, e.g.
 import sys
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
 from states import STATES
@@ -96,7 +97,18 @@ def engineer_features(panel: pd.DataFrame) -> pd.DataFrame:
 
         g["unemployment_rate_mom_change"] = g["unemployment_rate"].diff(1)
 
-        g["month_of_year"] = g["year_month"].dt.month
+        # Not the raw month number (1-12) -- that encoding puts December
+        # and January, adjacent in reality, about as far apart as two
+        # months can be numerically, which actively fights the model on
+        # its own single most important feature (43-61% of importance
+        # across every horizon/state per model/README.md's Results
+        # section, before this fix). Sin/cos together place every month on
+        # a circle, so November sits next to both October and December the
+        # way it actually does -- one of the two alone can't do this (sine
+        # alone maps e.g. month 3 and month 9 to the same value).
+        month_angle = 2 * np.pi * g["year_month"].dt.month / 12
+        g["month_sin"] = np.sin(month_angle)
+        g["month_cos"] = np.cos(month_angle)
         g["county"] = county
 
         out.append(g)
@@ -106,7 +118,8 @@ def engineer_features(panel: pd.DataFrame) -> pd.DataFrame:
     feature_cols = [
         "price_cut_pct", "price_cut_pct_lag1", "price_cut_pct_lag3", "price_cut_pct_lag6",
         "price_cut_pct_roll3", "zhvi_mom_pct", "zhvi_yoy_pct", "inventory_mom_pct",
-        "inventory_level", "unemployment_rate", "unemployment_rate_mom_change", "month_of_year",
+        "inventory_level", "unemployment_rate", "unemployment_rate_mom_change",
+        "month_sin", "month_cos",
     ]
     target_cols = [f"target_change_{h}m" for h in TARGET_HORIZONS]
     keep_cols = ["county", "year_month"] + target_cols + feature_cols
