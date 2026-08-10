@@ -63,6 +63,20 @@ THUMBNAIL_CACHE_DIR = Path(__file__).resolve().parent / "thumbnail_cache"
 THUMBNAIL_CACHE_DIR.mkdir(exist_ok=True)
 THUMBNAIL_CACHE_CONTROL = "public, max-age=31536000, immutable"
 
+# "/" had no Cache-Control at all -- every visitor, even two people
+# loading it back to back, re-downloaded and re-decompressed the full
+# listings payload (8.5MB+ and growing with every new scraper) straight
+# from Render, even though the underlying data only actually changes once
+# a day (see build_home_cache.py -- it's the last step of the daily
+# scrape, not something that reruns per-request). One day's staleness is
+# an accepted tradeoff here, not an oversight: Cloudflare (already in
+# front of this site) and browsers can now serve most visits entirely
+# from cache instead of hitting the origin at all. A manual scrape run
+# outside the daily schedule won't show up on "/" until this expires --
+# if that ever needs to be immediate, this needs an explicit cache purge
+# (or a shorter max-age), not just a code change here.
+HOME_PAGE_CACHE_CONTROL = "public, max-age=86400"
+
 NO_DATA = "No data available"
 
 # model/ is a separate, isolated project (own venv, own dependencies --
@@ -1203,7 +1217,10 @@ def deals_page():
       </script>
     """
 
-    return page_shell("GovLandScout", "home", body, extra_head=LEAFLET_HEAD)
+    return HTMLResponse(
+        content=page_shell("GovLandScout", "home", body, extra_head=LEAFLET_HEAD),
+        headers={"Cache-Control": HOME_PAGE_CACHE_CONTROL},
+    )
 
 
 def render_market_trends_page(state: dict) -> str:
