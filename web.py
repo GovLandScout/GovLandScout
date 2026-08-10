@@ -604,11 +604,14 @@ def listing_for_js(l: dict) -> dict:
     # Including state lets "PA" / "TX" work as a location search term, and
     # also disambiguates a search like "Potter" -- both states have one.
     search_text = f"{search_county} {l['state']} {l['precinct']} {search_place} {metro_terms}".lower()
-    image_url = (
-        f"/api/thumbnail?lat={l['latitude']}&lon={l['longitude']}"
-        if l["latitude"] is not None and l["longitude"] is not None
-        else None
-    )
+    # No maps_url or image_url here -- both used to be precomputed and
+    # shipped as full strings for every one of 14,000+ listings, but both
+    # are fully derivable from fields already in this dict (address/
+    # latitude/longitude), just a URL template away. That's real, wasted
+    # payload: image_url alone was ~45 bytes per listing with coordinates,
+    # purely restating the same lat/lon already sitting right next to it.
+    # The client now builds these itself (see imageUrl()/mapsUrl() in the
+    # page's own script) -- see "Shrinking JSON data payloads".
     return {
         "county": l["county"],
         "state": l["state"],
@@ -622,10 +625,8 @@ def listing_for_js(l: dict) -> dict:
         "address": l["address"] or None,
         "description": (l["description"][:120] if l["description"] else None),
         "source_url": l["source_url"],
-        "maps_url": l["maps_url"],
         "latitude": l["latitude"],
         "longitude": l["longitude"],
-        "image_url": image_url,
         "search_text": search_text,
     }
 
@@ -789,8 +790,8 @@ def deals_page():
           estimated_value: l => l.estimated_value == null,
           equity: l => l.equity_pct == null,
           minimum_bid: l => l.minimum_bid == null,
-          image: l => !l.image_url,
-          links: l => !l.source_url && !l.maps_url,
+          image: l => !imageUrl(l),
+          links: l => !l.source_url && !mapsUrl(l),
         }};
 
         function shuffleInPlace(arr) {{
@@ -965,13 +966,34 @@ def deals_page():
           return `<span class="equity-badge" style="background:${{equityColor(pct)}}">${{label}}</span>`;
         }}
 
+        // Both used to come pre-built from the server as full strings on
+        // every listing -- purely restating the address/latitude/longitude
+        // already sitting right next to them in the same object. Built
+        // here instead now, from data already on hand, not extra payload.
+        // Mirrors find_deals.py's build_maps_url() and the old
+        // image_url computation listing_for_js() used to do -- see
+        // "Shrinking JSON data payloads".
+        function imageUrl(l) {{
+          return (l.latitude != null && l.longitude != null)
+            ? `/api/thumbnail?lat=${{l.latitude}}&lon=${{l.longitude}}`
+            : null;
+        }}
+
+        function mapsUrl(l) {{
+          if (l.address) return `https://www.google.com/maps/search/?api=1&query=${{encodeURIComponent(l.address)}}`;
+          if (l.latitude != null && l.longitude != null) return `https://www.google.com/maps?q=${{l.latitude}},${{l.longitude}}`;
+          return null;
+        }}
+
         function buildRowHtml(l) {{
           const linksParts = [];
           if (l.source_url) linksParts.push(`<a href="${{escapeHtml(l.source_url)}}" target="_blank" rel="noopener noreferrer">Listing</a>`);
-          if (l.maps_url) linksParts.push(`<a href="${{escapeHtml(l.maps_url)}}" target="_blank" rel="noopener noreferrer">Map</a>`);
+          const mapUrl = mapsUrl(l);
+          if (mapUrl) linksParts.push(`<a href="${{escapeHtml(mapUrl)}}" target="_blank" rel="noopener noreferrer">Map</a>`);
           const linksHtml = linksParts.length ? linksParts.join(' · ') : NO_DATA_HTML;
-          const imageHtml = l.image_url
-            ? `<img src="${{escapeHtml(l.image_url)}}" width="80" height="80" loading="lazy" alt="Satellite view" class="thumb">`
+          const imgUrl = imageUrl(l);
+          const imageHtml = imgUrl
+            ? `<img src="${{escapeHtml(imgUrl)}}" width="80" height="80" loading="lazy" alt="Satellite view" class="thumb">`
             : NO_DATA_HTML;
 
           const countyLabel = l.county + (l.state ? ', ' + l.state : '');
@@ -1002,9 +1024,10 @@ def deals_page():
         function buildPopupContent(l) {{
           const div = document.createElement('div');
 
-          if (l.image_url) {{
+          const popupImgUrl = imageUrl(l);
+          if (popupImgUrl) {{
             const img = document.createElement('img');
-            img.src = l.image_url;
+            img.src = popupImgUrl;
             img.width = 150;
             img.height = 150;
             img.alt = 'Satellite view';
@@ -1055,7 +1078,8 @@ def deals_page():
 
           const links = [];
           if (l.source_url) links.push({{ text: 'Listing', href: l.source_url }});
-          if (l.maps_url) links.push({{ text: 'Map', href: l.maps_url }});
+          const popupMapUrl = mapsUrl(l);
+          if (popupMapUrl) links.push({{ text: 'Map', href: popupMapUrl }});
           if (links.length) {{
             div.appendChild(document.createElement('br'));
             links.forEach((link, i) => {{
