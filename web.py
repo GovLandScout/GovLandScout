@@ -481,7 +481,8 @@ def nav_html(active: str) -> str:
         ("/", "home", "Home"),
         ("/market-trends", "market-trends-tx", "Market Trends: TX (Experimental)"),
         ("/market-trends-pa", "market-trends-pa", "Market Trends: PA (Experimental)"),
-        ("/impact", "impact", "Impact"),
+        ("/numbers", "numbers-tx", "Numbers: TX"),
+        ("/numbers-pa", "numbers-pa", "Numbers: PA"),
         ("/investment-info", "investment", "Investment Info"),
         ("/manual-upload", "manual-upload", "Manual property uploads"),
         ("/about", "about", "About & Contact"),
@@ -1449,8 +1450,18 @@ def market_trends_pa_page():
     return render_market_trends_page(MARKET_TRENDS_STATES[1])
 
 
+
+# key is uppercase to match listings.state directly (unlike
+# MARKET_TRENDS_STATES's lowercase key, which is a model/public/ filename
+# fragment instead -- these two lists serve different lookups and don't
+# need matching conventions).
+NUMBERS_STATES = [
+    {"key": "TX", "name": "Texas", "route": "/numbers", "nav_key": "numbers-tx"},
+    {"key": "PA", "name": "Pennsylvania", "route": "/numbers-pa", "nav_key": "numbers-pa"},
+]
+
 # Friendly labels for the raw `source` domains stored per listing --
-# just for display on the Impact page, doesn't affect scraping/storage.
+# just for display on the Numbers pages, doesn't affect scraping/storage.
 SOURCE_LABELS = {
     "hctax.net": "Harris County Tax Office",
     "taxsales.lgbs.com": "Linebarger Goggan Blair & Sampson (tax trustee)",
@@ -1473,21 +1484,24 @@ SOURCE_LABELS = {
 }
 
 
-@app.get("/impact", response_class=HTMLResponse)
-def impact_page():
+def render_numbers_page(state: dict) -> str:
     conn = combined_db.get_connection()
-    listings = fetch_all_listings(conn)
-    sources = [r[0] for r in conn.execute("SELECT DISTINCT source FROM listings ORDER BY source").fetchall()]
+    listings = [l for l in fetch_all_listings(conn) if l["state"] == state["key"]]
+    sources = [r[0] for r in conn.execute(
+        "SELECT DISTINCT source FROM listings WHERE state = ? ORDER BY source", (state["key"],)
+    ).fetchall()]
     conn.close()
 
     total = len(listings)
-    # (county, state), not just county -- county names collide across
-    # states (both TX and PA have a Potter County), so deduping on the
-    # name alone would undercount by folding two distinct counties together.
-    counties = len({(l["county"], l["state"]) for l in listings})
+    # Just county name is safe here (no (county, state) pairing needed) --
+    # listings is already filtered to one state, so the cross-state
+    # collision this project otherwise has to guard against (both TX and
+    # PA have a Potter County) can't happen within a single state's page.
+    counties = len({l["county"] for l in listings})
     with_coords = sum(1 for l in listings if l["latitude"] is not None)
     priced_with_equity = [l for l in listings if l["equity"] is not None and l["equity"] > 0]
     total_equity = sum(l["equity"] for l in priced_with_equity)
+    avg_equity = total_equity / len(priced_with_equity) if priced_with_equity else 0
 
     stats = [
         (f"{total:,}", "Total listings tracked"),
@@ -1496,6 +1510,7 @@ def impact_page():
         (f"{with_coords:,}", "Listings mapped with real coordinates"),
         (f"{len(priced_with_equity):,}", "Listings with a calculated equity opportunity"),
         (f"${total_equity:,.0f}", "Total estimated equity represented"),
+        (f"${avg_equity:,.0f}", "Average equity per priced listing"),
     ]
     stat_cards = "".join(
         f'<div class="card stat-card"><div class="stat-value">{escape(value)}</div>'
@@ -1506,11 +1521,14 @@ def impact_page():
     source_items = "".join(
         f"<li>{escape(SOURCE_LABELS.get(s, s))} <span class=\"nodata\">({escape(s)})</span></li>"
         for s in sources
-    )
+    ) or '<li class="nodata">No sources tracked for this state yet.</li>'
+
+    other_state = next(s for s in NUMBERS_STATES if s is not state)
 
     body = f"""
-      <h1>Impact &amp; Numbers</h1>
-      <p class="subtitle">Pulled straight from the database each time this page loads, so what you see below is current, not a snapshot from whenever someone last refreshed it.</p>
+      <h1>Numbers: {state['name']}</h1>
+      <p class="subtitle">Pulled straight from the database each time this page loads, so what you see below is current, not a snapshot from whenever someone last refreshed it.
+         Looking for <a href="{other_state['route']}">{other_state['name']}'s numbers</a> instead?</p>
 
       <div class="stats-grid">{stat_cards}</div>
 
@@ -1520,13 +1538,25 @@ def impact_page():
            to get equity -- basically, how much room there is between what you'd pay and what the property is
            actually worth. A lot of listings don't have both numbers to work with (GSA and state surplus sales,
            for instance, don't come with an independent appraisal at all), which is why equity is only calculated
-           for {len(priced_with_equity):,} of the {total:,} listings tracked here, not all of them.</p>
+           for {len(priced_with_equity):,} of the {total:,} {state['name']} listings tracked here, not all of them.
+           "Average equity per priced listing" is the total estimated equity above divided by just that {len(priced_with_equity):,} --
+           not the full {total:,}, which would understate it by folding in listings with nothing to calculate from.</p>
 
         <h2>Where the data comes from</h2>
         <ul>{source_items}</ul>
       </div>
     """
-    return page_shell("GovLandScout - Impact", "impact", body)
+    return page_shell(f"GovLandScout - Numbers: {state['name']}", state["nav_key"], body)
+
+
+@app.get("/numbers", response_class=HTMLResponse)
+def numbers_tx_page():
+    return render_numbers_page(NUMBERS_STATES[0])
+
+
+@app.get("/numbers-pa", response_class=HTMLResponse)
+def numbers_pa_page():
+    return render_numbers_page(NUMBERS_STATES[1])
 
 
 @app.get("/investment-info", response_class=HTMLResponse)
@@ -1893,10 +1923,10 @@ def about_page():
 
         <h2>How it works</h2>
         <p>A set of scrapers run on a daily schedule, each pulling directly from an official or government-retained
-           source (see the <a href="/impact">Impact page</a> for the full list), normalizing everything into one
-           shared database. Nothing here is editorialized -- prices, descriptions, and account numbers are shown
-           as published by the source, and every listing links back to where it came from so you can verify it
-           yourself before bidding on anything.</p>
+           source (see the Numbers pages for <a href="/numbers">Texas</a> and <a href="/numbers-pa">Pennsylvania</a>
+           for the full list per state), normalizing everything into one shared database. Nothing here is
+           editorialized -- prices, descriptions, and account numbers are shown as published by the source, and
+           every listing links back to where it came from so you can verify it yourself before bidding on anything.</p>
 
         <h2>A word of caution</h2>
         <p>This is an independent research tool, not legal or financial advice, and not affiliated with any county,
