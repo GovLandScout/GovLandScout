@@ -56,8 +56,14 @@ pipeline for it (see "Running it" below), not new code.
   `predict_with_uncertainty()`. **Checked, not just asserted**:
   train_model.py's own copy of that function feeds a calibration check
   in its CV loop (does the true outcome actually fall inside the
-  predicted band as often as the band claims?) -- see Results below;
-  the honest answer is not yet as often as it should.
+  predicted band as often as the band claims?) -- see Results below.
+  The raw tree-spread turned out to be measurably overconfident, so it's
+  no longer shipped as-is: `train_model.py`'s `calibrate_uncertainty()`
+  fits a scale factor per horizon on those same walk-forward-CV
+  residuals (a held-out set, not the production model's own training
+  data) and saves it to `county_distress_calibration_{state}.json`;
+  `generate_predictions.py` applies it before writing the `±` band. See
+  "Uncertainty calibration" below for the before/after numbers.
 - **Not in scope yet**: per-property predictions, states beyond TX/PA,
   GovLandScout's own scraped history as a feature (revisit once it has
   enough months behind it to matter).
@@ -95,9 +101,15 @@ Each script takes a state key from `states.py` as its only CLI arg
    estimate is actually calibrated), then fits one final production
    random forest per horizon on all available data. Saves each as
    `county_distress_model_{state}_{h}m.joblib` (gitignored -- regenerated
-   by re-running this script, not something to commit).
+   by re-running this script, not something to commit), plus a
+   `county_distress_calibration_{state}.json` of per-horizon uncertainty
+   scale factors fit on the same CV residuals (also gitignored, same
+   reasoning as the `.joblib` files -- both regenerate together and
+   `generate_predictions.py` needs them run in the same pass).
 4. `generate_predictions.py <state>` -- runs that state's three trained
-   models against each county's latest available row and writes
+   models against each county's latest available row, scales each
+   prediction's uncertainty by that horizon's calibration factor, and
+   writes
    `public/{state}_county_predictions.json`.
 
 ## Publishing current predictions
@@ -188,16 +200,31 @@ Feature importances (production models, fit on all available data):
 - Unemployment features stay modest across horizons, similar to before
   this change.
 
-**Uncertainty calibration**: 36-42% of actual outcomes fell within the
-random forest's predicted ±1 std band across the three horizons (target
-for a well-calibrated Gaussian-shaped spread: ~68%), and 69-71% within
-±2 std (target: ~95%) -- similar to before mortgage rate was added, if
-slightly worse at 6 months specifically (36% vs. 43% before), consistent
-with that horizon's random forest also having gotten less accurate and
-less consistent above. **The band is meaningfully overconfident** --
-narrower than the model's real uncertainty, not just imprecise. The
-reduced-opacity/± range shown on `/market-trends` should be read as "the
-model is less sure than it looks," not taken at face value.
+**Uncertainty calibration**: before calibration, 36-42% of actual
+outcomes fell within the random forest's raw predicted ±1 std band
+across the three horizons (target for a well-calibrated Gaussian-shaped
+spread: ~68%), and 69-71% within ±2 std (target: ~95%) -- similar to
+before mortgage rate was added, if slightly worse at 6 months
+specifically (36% vs. 43% before), consistent with that horizon's random
+forest also having gotten less accurate and less consistent above. **The
+raw band was meaningfully overconfident** -- narrower than the model's
+real uncertainty, not just imprecise.
+
+Rather than leave that as a caveat, `train_model.py`'s
+`calibrate_uncertainty()` now fixes it directly: it pools every walk-
+forward fold's (residual, predicted std) pairs -- held-out predictions
+the model never trained on, so this is a fair calibration set, not a
+circular one -- and takes the 68th/95th percentile of `|residual| / std`
+as a per-horizon scale factor (`c68`, `c95`). Multiplying future std
+predictions by `c68` makes 68% coverage hold *by construction* on that
+same held-out data, the same logic as split-conformal prediction.
+Texas's fitted factors: `c68` of 1.94 (1-month), 1.86 (3-month), and 1.94
+(6-month) -- the raw band was undershooting the true spread by roughly
+double at every horizon, not just at the specific horizons flagged
+above. `generate_predictions.py` applies `c68` before writing the ± band
+`/market-trends` actually shows, so the reduced-opacity/± range shipped
+today reflects this calibrated, wider band -- no longer "less sure than
+it looks."
 
 ## Results: Pennsylvania (walk-forward cross-validation, 2026-08-11)
 
@@ -231,13 +258,27 @@ follow the same seasonality-dominant shape as Texas (`month_sin`/
 `mortgage_rate_mom_change` a modest but real presence throughout (7-8%
 combined at every horizon, similar magnitude to Texas).
 
-**Uncertainty calibration**: 45-55% coverage within ±1 std (target
-~68%), 79-85% within ±2 std (target ~95%) -- still overconfident, but
-improved from before mortgage rate was added at 3 and 6 months
-specifically (51%->55% and 51%->55%), the opposite direction from
-Texas's slight 6-month regression above. Same overall conclusion as
-Texas, just less severe: real uncertainty exists beyond what the current
-band shows.
+**Uncertainty calibration**: before calibration, 45-55% coverage within
+±1 std (target ~68%), 79-85% within ±2 std (target ~95%) -- still
+overconfident, but improved from before mortgage rate was added at 3 and
+6 months specifically (51%->55% and 51%->55%), the opposite direction
+from Texas's slight 6-month regression above. Same overall conclusion as
+Texas, just less severe: real uncertainty existed beyond what the raw
+band showed.
+
+Applying the same held-out-residual calibration described in the Texas
+section above (see `calibrate_uncertainty()`), Pennsylvania's fitted
+factors come out smaller than Texas's -- `c68` of 1.58 (1-month), 1.36
+(3-month), 1.29 (6-month) -- consistent with PA's raw band already being
+less overconfident than Texas's before any correction. `c68` shrinking
+as the horizon lengthens (1.58 -> 1.29) is also the opposite direction
+from Texas, whose factors stay essentially flat (1.94 -> 1.86 -> 1.94);
+one more data point for the "the two states don't behave the same way"
+theme running through this section, alongside the mortgage-rate finding
+below. As in Texas, `generate_predictions.py` now ships `std * c68`
+rather than the raw tree-spread, so the ± band on `/market-trends-pa`
+reflects this calibrated 68% coverage rather than the raw, overconfident
+one.
 
 **Why the same feature helped one state and hurt the other's deployed
 model isn't fully explained here** -- a real, open question rather than
@@ -270,16 +311,18 @@ The model isn't predicting Clay keeps climbing -- it's betting on
 reversion, gradually: essentially flat at 1 month (-1.0 points), a
 modest pullback at 3 months (-4.6 points), and the largest call, -7.9
 points, only shows up at 6 months. The uncertainty band on that 6-month
-number is now ±3.0 points (wider than the ±2.5 points before mortgage
-rate was added -- consistent with the 6-month random forest's own
-accuracy and calibration both having gotten somewhat worse, per the
-Results section above). Given the calibration finding, treat even this
-wider band as an understatement of the real uncertainty, not a tight,
-trustworthy bound. Whether the call is *right* isn't knowable yet
-(2026-12 data doesn't exist yet); what's checkable today is that the
-prediction is legible and tied to a real, visible pattern in the
-underlying data rather than an opaque number -- which is the whole point
-of shipping the drill-down chart on `/market-trends` alongside the map.
+number is now ±5.9 points, once the calibration factor from "Uncertainty
+calibration" above is applied (up from the ±3.0 points the raw,
+uncalibrated tree-spread would have shown -- itself already wider than
+the ±2.5 points before mortgage rate was added). That's not the model
+getting less sure about Clay specifically; it's the same 6-month
+`c68`≈1.94 factor Texas gets everywhere, now actually applied instead of
+left as a documented caveat. Whether the call is *right* isn't knowable
+yet (2026-12 data doesn't exist yet); what's checkable today is that the
+prediction is legible, tied to a real, visible pattern in the underlying
+data, and now paired with an honestly-sized uncertainty range rather
+than an overconfident one -- which is the whole point of shipping the
+drill-down chart on `/market-trends` alongside the map.
 
 ## Considered but not built: private mortgage foreclosure statistics
 
@@ -329,3 +372,13 @@ Retuning the random forest's hyperparameters for the now-larger feature
 set (see the Texas 6-month finding above) and investigating the
 state-specific mortgage-rate effect are both now concrete, evidence-
 backed follow-ups rather than open-ended ideas.
+
+The uncertainty-band fix above (see "Uncertainty calibration" in each
+state's Results section) is a single scale factor per horizon, fit once
+on the whole state -- it corrects the *average* overconfidence but
+doesn't know that some counties' predictions are better-calibrated than
+others'. A per-county or feature-dependent calibration (e.g. conformal
+prediction with a learned conformity score, or quantile regression
+forests predicting the band directly) would be more precise, at the cost
+of needing more held-out data than a single scalar does -- worth
+revisiting once there's more history to calibrate against, not before.

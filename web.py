@@ -1403,7 +1403,7 @@ def render_market_trends_page(state: dict) -> str:
               Current price-cut share: <b>${{(row.current_price_cut_pct * 100).toFixed(1)}}%</b>
               &middot; Model's ${{horizonLabel}} projection:
               <b>${{sign}}${{(row[horizon] * 100).toFixed(1)}} points</b>
-              ${{std != null ? `(&plusmn;${{(std * 100).toFixed(1)}} points across the forest's individual trees)` : ''}}
+              ${{std != null ? `(&plusmn;${{(std * 100).toFixed(1)}} points, a calibrated ~68% confidence range)` : ''}}
             </p>
             ${{buildTrendSvg(row.history, projectedValue)}}
             <p style="margin: 0.5rem 0 0; font-size: 0.8rem; color: #64748b;">

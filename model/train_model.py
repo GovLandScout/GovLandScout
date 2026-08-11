@@ -40,6 +40,7 @@ Run with a state key from states.py as the only CLI arg, e.g.
 `python3 train_model.py pa` (defaults to tx).
 """
 
+import json
 import sys
 from pathlib import Path
 
@@ -150,6 +151,12 @@ def evaluate_fold(train_df: pd.DataFrame, test_df: pd.DataFrame, target_col: str
         "naive_mae": naive_mae, "rf_mae": rf_mae, "lr_mae": lr_mae, "gb_mae": gb_mae,
         "rf_coverage_1std": coverage_1std, "rf_coverage_2std": coverage_2std,
         "test_rows": len(test_df),
+        # Raw per-row arrays, not just the aggregated coverage rates above --
+        # calibrate_uncertainty() below needs the individual (residual, std)
+        # pairs pooled across every fold to fit a calibration factor, and
+        # refitting the forest a second time just to get them back would
+        # waste this fold's work for no reason.
+        "abs_residuals": abs_residuals, "pred_std": rf_pred_std,
     }
 
 
@@ -168,6 +175,35 @@ def cross_validate(dataset: pd.DataFrame, horizon: int) -> list[dict]:
         result["test_range"] = f"{test_months[0]}..{test_months[-1]}"
         fold_results.append(result)
     return fold_results
+
+
+def calibrate_uncertainty(fold_results: list[dict]) -> dict:
+    """The coverage check in evaluate_fold() showed the raw tree-spread std
+    is overconfident (fewer outcomes fall inside +/-1 std than the ~68% a
+    well-calibrated band should catch -- see model/README.md's "Uncertainty
+    calibration" results). Rather than changing the forest itself, scale its
+    std by a factor fit on these same walk-forward-CV residuals: pool every
+    fold's (|residual|, std) pairs -- each from a model that never saw its
+    own test rows during training, so this is a fair, held-out calibration
+    set, not circular -- and take the 68th/95th percentile of |residual|/std
+    across all of them. Multiplying future std predictions by c68 then
+    guarantees (on this historical data, at least) that 68% of outcomes
+    would have landed inside the scaled band, by construction: this is
+    exactly what "68th percentile of the ratio" means. This is standard
+    split-conformal-style variance calibration, not a new model."""
+    abs_residuals = np.concatenate([r["abs_residuals"] for r in fold_results])
+    pred_std = np.concatenate([r["pred_std"] for r in fold_results])
+    # Rows where every tree in that fold's forest agreed exactly (std == 0)
+    # have an undefined ratio, not a near-infinite one -- exclude them from
+    # fitting the factor rather than dividing by zero.
+    nonzero = pred_std > 0
+    ratios = abs_residuals[nonzero] / pred_std[nonzero]
+    return {
+        "c68": float(np.quantile(ratios, 0.68)),
+        "c95": float(np.quantile(ratios, 0.95)),
+        "n": int(nonzero.sum()),
+        "ratios": ratios,  # kept off the saved JSON by main() -- just for its own post-fit coverage check
+    }
 
 
 def fit_production_model(dataset: pd.DataFrame, horizon: int, state_key: str) -> dict:
@@ -203,6 +239,7 @@ def main():
     dataset = pd.read_csv(DATA_DIR / f"{state_key}_county_month_dataset.csv")
     dataset["year_month"] = pd.PeriodIndex(dataset["year_month"], freq="M")
 
+    calibration_by_horizon = {}
     for horizon in TARGET_HORIZONS:
         print(f"\n{'=' * 60}\n{state['name'].upper()} -- {horizon}-MONTH HORIZON\n{'=' * 60}")
 
@@ -226,9 +263,22 @@ def main():
 
         cov1_mean, _ = summarize(folds, "rf_coverage_1std")
         cov2_mean, _ = summarize(folds, "rf_coverage_2std")
-        print(f"\nRandom forest uncertainty calibration (see predict_with_uncertainty()): "
+        print(f"\nRandom forest uncertainty calibration (see predict_with_uncertainty()), "
+              f"raw tree-spread std, before calibration: "
               f"{cov1_mean:.0%} of actual outcomes fell within the predicted ±1 std band "
               f"(well-calibrated target: ~68%), {cov2_mean:.0%} within ±2 std (target: ~95%).")
+
+        calibration = calibrate_uncertainty(folds)
+        ratios = calibration.pop("ratios")
+        cov68_after = float(np.mean(ratios <= calibration["c68"]))
+        cov95_after = float(np.mean(ratios <= calibration["c95"]))
+        print(f"Calibration factors fit on these {calibration['n']:,} held-out CV rows: "
+              f"c68={calibration['c68']:.2f}, c95={calibration['c95']:.2f} -- scaling std by c68 "
+              f"gives {cov68_after:.0%} coverage at the (now scaled) ±1 band, "
+              f"{cov95_after:.0%} at ±2 (c95/c68={calibration['c95'] / calibration['c68']:.2f}), "
+              f"by construction on this same held-out CV data (see calibrate_uncertainty()'s docstring "
+              f"for why that's a fair, non-circular check rather than a fit-your-own-test-set number).")
+        calibration_by_horizon[horizon] = calibration
 
         production = fit_production_model(dataset, horizon, state_key)
         print(f"\nProduction model trained on all {production['rows']:,} available rows "
@@ -236,6 +286,11 @@ def main():
         print("Feature importances:")
         for feature, importance in production["importances"].items():
             print(f"  {feature:<32} {importance:.3f}")
+
+    calibration_path = Path(__file__).parent / f"county_distress_calibration_{state_key}.json"
+    calibration_path.write_text(json.dumps(calibration_by_horizon, indent=2))
+    print(f"\nSaved uncertainty calibration factors to {calibration_path.name} "
+          f"(generate_predictions.py applies c68 to the shipped ± band).")
 
 
 if __name__ == "__main__":

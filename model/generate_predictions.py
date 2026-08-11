@@ -105,13 +105,24 @@ def main():
 
     history = recent_history_by_county(dataset)
 
+    # c68 per horizon, fit by train_model.py's calibrate_uncertainty() on
+    # walk-forward CV residuals -- the raw tree-spread std below is
+    # measurably overconfident (see model/README.md's "Uncertainty
+    # calibration" results), so it's scaled here before shipping rather than
+    # sent as-is. See that function's docstring for why a scalar fit on
+    # held-out CV rows is a fair calibration, not a circular one.
+    calibration = json.loads((Path(__file__).parent / f"county_distress_calibration_{state_key}.json").read_text())
+
     predictions = {}
     for horizon in TARGET_HORIZONS:
         model = joblib.load(Path(__file__).parent / f"county_distress_model_{state_key}_{horizon}m.joblib")
         means, stds = predict_with_uncertainty(model, latest[FEATURE_COLS])
+        c68 = calibration[str(horizon)]["c68"]
         for county, mean, std in zip(latest["county"], means, stds):
             predictions.setdefault(county, {})[f"change_{horizon}m"] = round(float(mean), 4)
-            predictions[county][f"change_{horizon}m_std"] = round(float(std), 4)
+            # Calibrated to ~68% historical coverage, not the raw per-tree
+            # spread -- see the calibration comment above.
+            predictions[county][f"change_{horizon}m_std"] = round(float(std) * c68, 4)
 
     output = []
     for _, row in latest.iterrows():
