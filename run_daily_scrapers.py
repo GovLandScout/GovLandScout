@@ -90,6 +90,13 @@ def main():
     # as geocode_backfill.py below.
     run_step(project_dir, run_started_at, "collin_archive_scraper.py")
 
+    # Runs before geocode_backfill.py, not after: this resolves several
+    # counties by parcel ID against PA DEP's own parcel data (see its
+    # module docstring for why that succeeds where a street-address
+    # geocoder doesn't), so running it first means geocode_backfill.py
+    # isn't spending Census requests on addresses this already solved.
+    run_step(project_dir, run_started_at, "pa_parcel_geocode.py")
+
     # Runs last, once, against whatever addresses today's scrapers just
     # added -- not its own scraper, so it isn't in SCRAPERS above, but it's
     # tracked the same way so a broken geocoder shows up on the bell too.

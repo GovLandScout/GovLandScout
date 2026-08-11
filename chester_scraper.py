@@ -13,13 +13,17 @@ dynamic -- the document id in the URL (/DocumentCenter/View/85421 for
 No street address is published here, only a legal description ("WS OF
 HILLSIDE DR", "NE COR OF E BARNARD & S WORTHINGTON") -- a directional
 description relative to a road, not a street number. Unlike Montgomery's
-clean postal addresses, there's nothing here worth handing to a geocoder
-(no house number to resolve, and the abbreviated directional format is
-inconsistent enough that even extracting a clean street name would be
-guesswork). These listings are stored with address=None -- they still
-show in the site's table like any other listing missing that field, just
-without a map pin, the same tradeoff GovEase's township-only Monroe
-County listings already make.
+clean postal addresses, there's nothing here worth handing to a
+street-address geocoder (no house number to resolve, and the abbreviated
+directional format is inconsistent enough that even extracting a clean
+street name would be guesswork). These listings are stored with
+address=None -- the same tradeoff GovEase's township-only Monroe County
+listings make, but not a dead end the way it first looks: ALTID (this
+scraper's account_number) turns out to be Chester County's own parcel ID,
+which pa_parcel_geocode.py looks up directly against PA DEP's statewide
+parcel layer (a different technique than geocoding an address at all --
+see that script's own docstring) and fills in both a real street address
+and a map pin for ~88% of these rows, no street-level scraping needed.
 
 Confirmed against the real 2026 list before writing this: 349 rows, both
 the ALTID (parcel, e.g. "1-2-63") and Customer (internal account id, e.g.

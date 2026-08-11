@@ -7,3 +7,4 @@ thumbnail_cache/
 model/data/
 model/venv/
 model/*.joblib
+model/county_distress_calibration_*.json
