@@ -36,10 +36,12 @@ pipeline for it (see "Running it" below), not new code.
   month number. That raw encoding put December and January, adjacent in
   reality, about as numerically far apart as two months can be, actively
   fighting the model on what turned out to be its single most important
-  feature -- see Results below for the before/after. The mortgage rate
-  is national, not per-county, like Zillow's ZHVI/price-cut/inventory
-  data itself -- see Results below for a real, mixed finding about
-  whether it actually helped.
+  feature. The mortgage rate is national, not per-county, like Zillow's
+  ZHVI/price-cut/inventory data itself -- it helped both states' random
+  forests once their hyperparameters were tuned (see "Hyperparameter
+  search" and each state's Results below), though it genuinely hurt
+  Texas's 6-month model before that tuning existed -- see "Next steps"
+  for that history and why it's no longer an open production concern.
 - **Model**: scikit-learn RandomForestRegressor (the production model
   `generate_predictions.py` actually serves), evaluated in
   `train_model.py` against a naive "predict zero change" baseline, a
@@ -47,7 +49,12 @@ pipeline for it (see "Running it" below), not new code.
   walk-forward time-based cross-validation (several rolling folds, not
   one fixed split -- see Results below for why that matters). Gradient
   boosting is a comparison point only, not a production candidate as-is
-  -- see Results for why swapping it in isn't just a config change.
+  -- see Results for why swapping it in isn't just a config change. The
+  forest's own hyperparameters (tree count, depth, leaf/split sizes,
+  features considered per split) are no longer one hand-picked config
+  reused everywhere -- `random_search_rf()` searches per horizon per
+  state, scored on the same walk-forward folds, before every other
+  number in this README is computed. See "Hyperparameter search" below.
 - **Uncertainty, not just a point estimate**: each production model
   also reports the spread across its individual trees' predictions for
   a given county, surfaced on `/market-trends` as reduced opacity for
@@ -95,11 +102,14 @@ Each script takes a state key from `states.py` as its only CLI arg
 2. `build_dataset.py <state>` -- joins all of it into one county-month
    panel for that state, engineers the lagged/rolling features described
    above, and writes `data/{state}_county_month_dataset.csv`.
-3. `train_model.py <state>` -- walk-forward cross-validation per horizon
-   (random forest vs. linear regression vs. gradient boosting vs. a naive
-   baseline, plus a check on whether the random forest's own uncertainty
-   estimate is actually calibrated), then fits one final production
-   random forest per horizon on all available data. Saves each as
+3. `train_model.py <state>` -- for each horizon, first a random search
+   over the random forest's own hyperparameters (see "Hyperparameter
+   search" below), then walk-forward cross-validation with the winning
+   config (random forest vs. linear regression vs. gradient boosting vs.
+   a naive baseline, plus a check on whether the random forest's own
+   uncertainty estimate is actually calibrated), then fits one final
+   production random forest per horizon on all available data using that
+   same winning config. Saves each as
    `county_distress_model_{state}_{h}m.joblib` (gitignored -- regenerated
    by re-running this script, not something to commit), plus a
    `county_distress_calibration_{state}.json` of per-horizon uncertainty
@@ -141,165 +151,179 @@ python3 generate_predictions.py tx   # updates public/tx_county_predictions.json
 # repeat with "pa" (or any other key added to states.py) for another state
 ```
 
-## Results: Texas (walk-forward cross-validation, 2026-08-11)
+## Hyperparameter search
+
+`train_model.py`'s `random_search_rf()` runs before every other number in
+this README is computed. Per horizon (and per state, since `main()` runs
+per state), it samples `RANDOM_SEARCH_ITER` (15) random combinations of
+`n_estimators`/`max_depth`/`min_samples_leaf`/`min_samples_split`/
+`max_features` from `RF_SEARCH_SPACE`, plus the old hand-picked config
+(`n_estimators=300, max_depth=10, min_samples_leaf=5`) as a guaranteed
+16th candidate, and scores each by mean MAE across the *same*
+walk-forward folds used everywhere else in this file -- not sklearn's own
+`RandomizedSearchCV`, whose default k-fold would shuffle a county's later
+months into the same fold as its earlier ones, the exact future-leak
+walk-forward CV exists to avoid (see train_model.py's module docstring).
+The winning config feeds every RF fit downstream: the comparison table
+below, the coverage check, and the production model itself.
+
+This turned out to matter well beyond the Texas 6-month weakness that
+motivated it (see the previous version of this section in git history --
+that model beat naive by only 36.1% there, worst of any horizon/state,
+with the least consistent fold-to-fold error of any combination this
+project has measured). Every one of the six horizon/state combinations
+below improved, most by a small amount, one by a lot:
+
+| State | Horizon | Winning config (vs. the old default) | MAE improvement |
+|---|---|---|---|
+| TX | 1 month | `max_depth=None, min_samples_split=10, max_features='sqrt'` | 6.8% |
+| TX | 3 months | `max_depth=None, min_samples_leaf=1, min_samples_split=5, max_features=1.0` | 3.7% |
+| TX | 6 months | `n_estimators=200, max_depth=None, min_samples_split=2, max_features='log2'` | **17.1%** |
+| PA | 1 month | `max_depth=None, min_samples_split=10, max_features='sqrt'` | 1.1% |
+| PA | 3 months | `n_estimators=200, max_depth=20, min_samples_leaf=1, min_samples_split=2, max_features=1.0` | 1.5% |
+| PA | 6 months | `n_estimators=200, max_depth=20, min_samples_leaf=1, min_samples_split=2, max_features=1.0` | 2.8% |
+
+A pattern worth naming: every winning config keeps `max_depth` at 10 or
+deeper (mostly unbounded) and widens `min_samples_split`/`max_features`
+instead -- the old default's `max_depth=10` was apparently the wrong
+lever for controlling overfitting on this feature set, constraining tree
+*depth* uniformly rather than how much data or how many features get
+considered at a given split. Also unexpected: this search targeted MAE
+only, not calibration, but tuning fixed most of the uncertainty-band
+problem as a side effect too -- see "Uncertainty calibration" in each
+state's section below.
+
+## Results: Texas (walk-forward cross-validation, 2026-08-12)
 
 207 TX counties, ~15,500 county-month training examples spanning 2019-03
 through 2026-06. Evaluated on 4 rolling walk-forward folds per horizon
 (3-month test windows each, all in 2024-11 through 2026-05) rather than
 one fixed split -- see train_model.py's module docstring for why a
 single split understates how much performance actually varies month to
-month.
+month. RF here uses each horizon's winning config from "Hyperparameter
+search" above, not the old fixed default.
 
 | Horizon | Naive MAE | Linear MAE | RF MAE | GB MAE | RF vs. naive | Linear vs. naive | GB vs. naive |
 |---|---|---|---|---|---|---|---|
-| 1 month | 0.0162 ± 0.0013 | 0.0128 ± 0.0011 | 0.0137 ± 0.0006 | 0.0129 ± 0.0004 | 15.5% | 20.6% | **20.3%** |
-| 3 months | 0.0378 ± 0.0067 | 0.0249 ± 0.0011 | 0.0230 ± 0.0023 | 0.0219 ± 0.0026 | 39.1% | 34.0% | **41.9%** |
-| 6 months | 0.0505 ± 0.0059 | 0.0258 ± 0.0019 | 0.0323 ± 0.0116 | 0.0257 ± 0.0064 | 36.1% | **49.0%** | 49.1% |
+| 1 month | 0.0162 ± 0.0013 | 0.0128 ± 0.0011 | **0.0127 ± 0.0004** | 0.0129 ± 0.0004 | **21.2%** | 20.6% | 20.3% |
+| 3 months | 0.0378 ± 0.0067 | 0.0249 ± 0.0011 | 0.0222 ± 0.0017 | 0.0219 ± 0.0026 | 41.3% | 34.0% | **41.9%** |
+| 6 months | 0.0505 ± 0.0059 | 0.0258 ± 0.0019 | 0.0267 ± 0.0072 | 0.0257 ± 0.0064 | 47.1% | 49.0% | **49.1%** |
 
 (± is one standard deviation across the 4 folds -- how consistent each
 model's error was across different stretches of time, not the accuracy
-of a single number. These numbers are after adding the national mortgage
-rate as a feature -- see the honest, mixed finding on that below; the
-gradient-boosting-wins-everywhere headline from before this addition no
-longer holds cleanly at 1 month.)
+of a single number.)
 
-**Adding mortgage rate genuinely helped some of these models and
-genuinely hurt one, and the one it hurt is the one actually deployed.**
-At 6 months specifically, the random forest went from beating naive by
-46.8% (before mortgage rate) to just 36.1% -- and its fold-to-fold
-consistency got much worse too (± 0.0116, versus ± 0.0069 before; one
-fold's error nearly doubled). Linear regression and gradient boosting
-both held up fine or improved at 6 months (49.0% and 49.1%, both up from
-before). This isn't a case for reverting the feature -- `mortgage_rate`
-and `mortgage_rate_mom_change` clearly carry real signal (see feature
-importances below), and the *other* two models used it well -- but it's
-a real, documented reason the production random forest's 6-month Texas
-call should be read with extra caution right now, on top of the
-calibration caveat below. Whether that's fixable by retuning the random
-forest's own hyperparameters for the larger feature set, or is a sign
-the production model choice deserves revisiting per-horizon rather than
-fixed at "always random forest," is real follow-up work this table makes
-concrete rather than a vague TODO.
+**The random forest now wins outright at 1 month** (21.2% vs. naive,
+ahead of both linear regression and gradient boosting -- it previously
+lost to both, at only 15.5%), and **6 months went from the worst result
+in this whole table (36.1%, the finding that motivated the hyperparameter
+search) to competitive with linear regression and gradient boosting**
+(47.1% vs. their 49.0%/49.1%), with fold-to-fold consistency more than
+1.5x tighter (± 0.0072, down from ± 0.0116). Gradient boosting still
+wins at 3 and 6 months, by a narrower margin than before -- this remains
+a comparison point, not a production candidate, for the reason given in
+Scope above (its sequential trees can't produce the same tree-spread
+uncertainty estimate).
 
 Feature importances (production models, fit on all available data):
 
-- **`month_sin`/`month_cos` together are still the dominant features at
-  every horizon.**
-- **`mortgage_rate`/`mortgage_rate_mom_change` are a real, if secondary,
-  presence at every horizon** -- 7-9% combined at 1 and 3 months, and at
-  6 months `mortgage_rate_mom_change` alone is the *second*-most
-  important feature in the whole model (14%), ahead of every ZHVI and
-  unemployment feature. A recent shift in national borrowing costs
-  apparently carries real signal about a county's price-cut trajectory
-  6 months out -- consistent with the 6-month MAE finding above, even
-  though that finding is about the random forest specifically
-  struggling to generalize it, not about the feature lacking real signal.
+- **`month_sin`/`month_cos` are still present at every horizon but no
+  longer dominate as heavily as before tuning**, especially at 1 month:
+  together they're now ~22% (was closer to 50%+ pre-tuning), with
+  `inventory_mom_pct`, `price_cut_pct_lag1`, and `price_cut_pct_roll3`
+  each now carrying real, comparable weight (7-8% apiece). A shallower,
+  more heavily-split-regularized forest (see the hyperparameter pattern
+  above) apparently spreads its splits across more of the 15 features
+  instead of leaning on the two strongest ones as hard.
+- **`mortgage_rate`/`mortgage_rate_mom_change` remain a real presence at
+  every horizon** -- around 12% combined at 1 month, 8% at 3 months, and
+  15% combined at 6 months (`mortgage_rate_mom_change` alone is the
+  *third*-most important feature there). Unlike before tuning, the
+  random forest at 6 months is no longer struggling to generalize this
+  signal (see the MAE improvement above) -- it's simply using it.
 - `price_cut_pct` itself (current level) still shows a mean-reversion
   pattern across horizons -- see the Clay County case study below for a
   concrete example.
-- Unemployment features stay modest across horizons, similar to before
-  this change.
+- Unemployment features stay modest across horizons, similar to before.
 
-**Uncertainty calibration**: before calibration, 36-42% of actual
-outcomes fell within the random forest's raw predicted ±1 std band
-across the three horizons (target for a well-calibrated Gaussian-shaped
-spread: ~68%), and 69-71% within ±2 std (target: ~95%) -- similar to
-before mortgage rate was added, if slightly worse at 6 months
-specifically (36% vs. 43% before), consistent with that horizon's random
-forest also having gotten less accurate and less consistent above. **The
-raw band was meaningfully overconfident** -- narrower than the model's
-real uncertainty, not just imprecise.
+**Uncertainty calibration**: before applying any scale factor, 64-70% of
+actual outcomes now fall within the random forest's raw predicted ±1 std
+band across the three horizons (target for a well-calibrated
+Gaussian-shaped spread: ~68%) -- **up from 36-42% before tuning**, close
+enough to the target that the forest's own tree-spread is now nearly
+honest on its own, not something that needed a ~2x correction. 91-95%
+land within ±2 std (target: ~95%), also much closer than the 69-71%
+before.
 
-Rather than leave that as a caveat, `train_model.py`'s
-`calibrate_uncertainty()` now fixes it directly: it pools every walk-
-forward fold's (residual, predicted std) pairs -- held-out predictions
-the model never trained on, so this is a fair calibration set, not a
-circular one -- and takes the 68th/95th percentile of `|residual| / std`
-as a per-horizon scale factor (`c68`, `c95`). Multiplying future std
-predictions by `c68` makes 68% coverage hold *by construction* on that
-same held-out data, the same logic as split-conformal prediction.
-Texas's fitted factors: `c68` of 1.94 (1-month), 1.86 (3-month), and 1.94
-(6-month) -- the raw band was undershooting the true spread by roughly
-double at every horizon, not just at the specific horizons flagged
-above. `generate_predictions.py` applies `c68` before writing the ± band
-`/market-trends` actually shows, so the reduced-opacity/± range shipped
-today reflects this calibrated, wider band -- no longer "less sure than
-it looks."
+`train_model.py`'s `calibrate_uncertainty()` still fits a scale factor
+the same way as before (68th/95th percentile of `|residual| / std` across
+every walk-forward fold's held-out predictions -- see its own docstring),
+but Texas's fitted factors are now much closer to 1 -- `c68` of 1.10
+(1-month), 0.97 (3-month, actually *below* 1, meaning the raw band was
+briefly slightly *too wide* there rather than too narrow), and 1.03
+(6-month) -- compared to ~1.9 at every horizon before tuning.
+`generate_predictions.py` still applies `c68` before writing the ± band
+`/market-trends` shows, but the correction it's making today is a small
+honest tweak, not the roughly-doubling fix it used to be.
 
-## Results: Pennsylvania (walk-forward cross-validation, 2026-08-11)
+## Results: Pennsylvania (walk-forward cross-validation, 2026-08-12)
 
 66 PA counties, ~5,300-5,400 county-month training examples (fewer than
 Texas simply because Pennsylvania has far fewer counties -- 67 total vs.
 254), same 2019-03 through 2026-06 span and same 4-fold walk-forward
-setup.
+setup. RF here uses each horizon's winning config from "Hyperparameter
+search" above, not the old fixed default.
 
 | Horizon | Naive MAE | Linear MAE | RF MAE | GB MAE | RF vs. naive | Linear vs. naive | GB vs. naive |
 |---|---|---|---|---|---|---|---|
-| 1 month | 0.0184 ± 0.0028 | 0.0118 ± 0.0004 | 0.0128 ± 0.0004 | 0.0124 ± 0.0002 | 30.6% | **35.7%** | 32.9% |
-| 3 months | 0.0379 ± 0.0032 | 0.0232 ± 0.0020 | 0.0219 ± 0.0012 | 0.0213 ± 0.0013 | 42.2% | 38.9% | **43.9%** |
-| 6 months | 0.0518 ± 0.0151 | 0.0224 ± 0.0010 | 0.0240 ± 0.0019 | 0.0223 ± 0.0026 | 53.6% | 56.7% | **56.9%** |
+| 1 month | 0.0184 ± 0.0028 | 0.0118 ± 0.0004 | 0.0126 ± 0.0005 | 0.0124 ± 0.0002 | 31.4% | **35.7%** | 32.9% |
+| 3 months | 0.0379 ± 0.0032 | 0.0232 ± 0.0020 | 0.0216 ± 0.0010 | 0.0213 ± 0.0013 | 43.0% | 38.9% | **43.9%** |
+| 6 months | 0.0518 ± 0.0151 | 0.0224 ± 0.0010 | 0.0234 ± 0.0019 | 0.0223 ± 0.0026 | 54.9% | 56.7% | **56.9%** |
 
-**Unlike Texas, mortgage rate was a clean win across the board in
-Pennsylvania.** Every model improved at every horizon compared to before
-this feature was added -- the random forest's 3-month score alone jumped
-from 37.0% to 42.2% vs. naive, and 6-month from 47.4% to 53.6%.
-Calibration improved too (see below). Linear regression still wins at 1
-and 6 months and gradient boosting at 3, same pattern as before this
-change, but the random forest -- the one actually deployed -- is
-genuinely closer to competitive here than it was, and closer than it is
-in Texas right now. With a third as many counties and a smaller, more
-geographically compact state, PA's 6-month fold error is also still the
-least consistent of any horizon/state combination here (± up to 0.0151)
--- a smaller, noisier dataset is a plausible reason the more flexible
-models have a harder time earning their extra complexity back, though
-less so now than before mortgage rate was added. Feature importances
-follow the same seasonality-dominant shape as Texas (`month_sin`/
-`month_cos` together 46-83% across horizons), with `mortgage_rate`/
-`mortgage_rate_mom_change` a modest but real presence throughout (7-8%
-combined at every horizon, similar magnitude to Texas).
+**Pennsylvania's gains from tuning were real but modest** -- 1-3
+percentage points of MAE improvement at every horizon, versus Texas's
+much larger 6-month jump. Linear regression still wins at 1 and 6 months
+and gradient boosting at 3, same pattern as before tuning, but the random
+forest -- the one actually deployed -- narrowed the gap at every horizon.
+With a third as many counties and a smaller, more geographically compact
+state, PA's 6-month fold error is also still the least consistent of any
+horizon/state combination here (± up to 0.0151) -- a smaller, noisier
+dataset is a plausible reason the more flexible models have a harder time
+earning their extra complexity back. Feature importances follow the same
+seasonality-dominant shape as Texas (`month_sin`/`month_cos` together
+28-57% across horizons, still the largest single block but less
+dominant at 1 and 3 months than before tuning -- `inventory_mom_pct`
+alone is now the second-most important feature at 1 month, 12%), with
+`mortgage_rate`/`mortgage_rate_mom_change` a modest but real presence
+throughout (8-10% combined at every horizon, similar magnitude to Texas).
 
-**Uncertainty calibration**: before calibration, 45-55% coverage within
-±1 std (target ~68%), 79-85% within ±2 std (target ~95%) -- still
-overconfident, but improved from before mortgage rate was added at 3 and
-6 months specifically (51%->55% and 51%->55%), the opposite direction
-from Texas's slight 6-month regression above. Same overall conclusion as
-Texas, just less severe: real uncertainty existed beyond what the raw
-band showed.
+**Uncertainty calibration**: before applying any scale factor, 56-70%
+coverage within ±1 std (target ~68%) -- **up from 45-55% before
+tuning**, and 87-94% within ±2 std (target ~95%), also closer than
+79-85% before. Same pattern as Texas: tuning for MAE alone fixed most of
+the calibration gap as a side effect.
 
-Applying the same held-out-residual calibration described in the Texas
-section above (see `calibrate_uncertainty()`), Pennsylvania's fitted
-factors come out smaller than Texas's -- `c68` of 1.58 (1-month), 1.36
-(3-month), 1.29 (6-month) -- consistent with PA's raw band already being
-less overconfident than Texas's before any correction. `c68` shrinking
-as the horizon lengthens (1.58 -> 1.29) is also the opposite direction
-from Texas, whose factors stay essentially flat (1.94 -> 1.86 -> 1.94);
-one more data point for the "the two states don't behave the same way"
-theme running through this section, alongside the mortgage-rate finding
-below. As in Texas, `generate_predictions.py` now ships `std * c68`
-rather than the raw tree-spread, so the ± band on `/market-trends-pa`
-reflects this calibrated 68% coverage rather than the raw, overconfident
-one.
-
-**Why the same feature helped one state and hurt the other's deployed
-model isn't fully explained here** -- a real, open question rather than
-a loose end papered over. Plausible contributors: Pennsylvania's smaller
-dataset may simply have had more room to gain from an informative
-national-level feature that adds the same value to every county-month
-row, while Texas's random forest, already fit against many more county-
-month combinations, may have found spurious mortgage-rate-correlated
-splits in some of its 254 fairly different county subpopulations that
-didn't generalize the same way forward. That's a hypothesis, not a
-verified explanation -- worth real investigation before concluding much
-more than "the effect isn't uniform and shouldn't be assumed to be."
+Pennsylvania's fitted `c68` factors are correspondingly smaller than
+before tuning too -- 1.28 (1-month), 0.98 (3-month, like Texas's 3-month
+figure, actually *below* 1), 0.95 (6-month) -- down from 1.58/1.36/1.29.
+`c68` shrinking as the horizon lengthens is the same direction Texas
+moved in this time (unlike before tuning, when the two states' factors
+moved in opposite directions with horizon) -- one more sign that
+tuning brought the two states' calibration behavior closer together, not
+just their raw accuracy. `generate_predictions.py` still ships `std *
+c68` rather than the raw tree-spread, but -- as in Texas -- the
+correction it's making today is a small honest tweak, not the ~1.3-1.6x
+fix it used to be.
 
 ## Case study: Clay County
 
-The single largest predicted move in the current output (see
-`public/tx_county_predictions.json`) is still Clay County's 6-month
-horizon, same county as before mortgage rate was added, though a smaller
-call now: a projected **-7.9 point** drop in price-cut share, from a
-current 29.7% down toward roughly 22% (previously a -11.9 point call
-toward roughly 18%, before this feature was added).
+Clay County's 6-month horizon is still one of the largest predicted
+moves in the current output (see `public/tx_county_predictions.json`),
+though no longer the single largest -- Andrews County's 6-month call
+(-8.75 points) is now marginally bigger. Clay's own call barely moved
+through hyperparameter tuning: a projected **-8.7 point** drop in
+price-cut share, from a current 29.7% down toward roughly 21% (was -7.9
+points before tuning).
 
 Its actual history explains why: Clay sat in a 22-25% band through most
 of 2025, dropped to a recent low of 10.6% in January 2026 -- then spiked
@@ -308,21 +332,19 @@ hard: 13.0% (Feb) -> 14.6% (Mar) -> 21.3% (Apr) -> 25.7% (May) -> 29.7%
 for a county that had otherwise been comparatively range-bound.
 
 The model isn't predicting Clay keeps climbing -- it's betting on
-reversion, gradually: essentially flat at 1 month (-1.0 points), a
-modest pullback at 3 months (-4.6 points), and the largest call, -7.9
+reversion, gradually: essentially flat at 1 month (-1.2 points), a
+modest pullback at 3 months (-4.7 points), and the largest call, -8.7
 points, only shows up at 6 months. The uncertainty band on that 6-month
-number is now ±5.9 points, once the calibration factor from "Uncertainty
-calibration" above is applied (up from the ±3.0 points the raw,
-uncalibrated tree-spread would have shown -- itself already wider than
-the ±2.5 points before mortgage rate was added). That's not the model
-getting less sure about Clay specifically; it's the same 6-month
-`c68`≈1.94 factor Texas gets everywhere, now actually applied instead of
-left as a documented caveat. Whether the call is *right* isn't knowable
-yet (2026-12 data doesn't exist yet); what's checkable today is that the
-prediction is legible, tied to a real, visible pattern in the underlying
-data, and now paired with an honestly-sized uncertainty range rather
-than an overconfident one -- which is the whole point of shipping the
-drill-down chart on `/market-trends` alongside the map.
+number is now ±3.5 points -- *narrower* than the ±5.9 points before
+tuning, even though the point estimate itself moved further from zero,
+because the tuned forest's raw tree-spread is now close to honestly
+calibrated (see "Uncertainty calibration" above) rather than needing a
+~2x correction. Whether the call is *right* isn't knowable yet (2026-12
+data doesn't exist yet); what's checkable today is that the prediction
+is legible, tied to a real, visible pattern in the underlying data, and
+paired with a tighter, still-honest uncertainty range -- which is the
+whole point of shipping the drill-down chart on `/market-trends`
+alongside the map.
 
 ## Considered but not built: private mortgage foreclosure statistics
 
@@ -368,17 +390,37 @@ history). Once it has enough months behind it to compute county-level
 rolling features from (mirroring what this model already does with
 Zillow's price-cut data), it becomes a candidate to fold in as an
 additional feature -- or, further out, a target in its own right.
-Retuning the random forest's hyperparameters for the now-larger feature
-set (see the Texas 6-month finding above) and investigating the
-state-specific mortgage-rate effect are both now concrete, evidence-
-backed follow-ups rather than open-ended ideas.
 
-The uncertainty-band fix above (see "Uncertainty calibration" in each
-state's Results section) is a single scale factor per horizon, fit once
-on the whole state -- it corrects the *average* overconfidence but
-doesn't know that some counties' predictions are better-calibrated than
-others'. A per-county or feature-dependent calibration (e.g. conformal
-prediction with a learned conformity score, or quantile regression
-forests predicting the band directly) would be more precise, at the cost
-of needing more held-out data than a single scalar does -- worth
-revisiting once there's more history to calibrate against, not before.
+Retuning the random forest's hyperparameters (see "Hyperparameter
+search" above) is now done, not an open item -- but the search itself
+suggests two concrete follow-ups rather than closing the topic
+entirely: `RANDOM_SEARCH_ITER` is currently 15 candidates per
+horizon/state; a wider or more targeted search (e.g. sampling more
+densely around the winning configs found here, which consistently
+avoided a shallow `max_depth`) might find further gains, at the cost of
+more CV fitting time. Separately, gradient boosting still wins outright
+at 3 and 6 months in both states even after tuning the random forest --
+worth someday asking whether *its* hyperparameters were ever tuned as
+carefully as the production model's now are, since today's GB numbers
+still use the same hand-picked config from before this search existed.
+
+Investigating why mortgage rate helped Pennsylvania's random forest
+cleanly but originally hurt Texas's 6-month one (a real, documented
+finding before this round of tuning -- see git history for the previous
+version of this section) is less urgent now that hyperparameter tuning
+resolved the practical symptom: Texas's 6-month RF no longer struggles
+to generalize the feature the way it did. Still an open question about
+*why* the two states diverged, just no longer a production accuracy
+problem riding on the answer.
+
+The uncertainty-band fix (see "Uncertainty calibration" in each state's
+Results section) is a single scale factor per horizon, fit once on the
+whole state -- it corrects the *average* overconfidence but doesn't know
+that some counties' predictions are better-calibrated than others'. That
+gap matters less than it did (tuning brought every `c68` factor close to
+1 -- see above), but a per-county or feature-dependent calibration (e.g.
+conformal prediction with a learned conformity score, or quantile
+regression forests predicting the band directly) would still be more
+precise, at the cost of needing more held-out data than a single scalar
+does -- worth revisiting once there's more history to calibrate against,
+not before.

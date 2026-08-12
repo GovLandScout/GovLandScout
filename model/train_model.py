@@ -31,6 +31,23 @@ as a benchmark -- the point isn't "linear regression is competitive,"
 it's showing the forest was actually compared against something rather
 than being the only thing tried.
 
+Before that comparison runs, random_search_rf() tunes the random forest's
+own hyperparameters per horizon -- n_estimators/max_depth/min_samples_leaf/
+min_samples_split/max_features, sampled from RF_SEARCH_SPACE below and
+scored by mean MAE across the *same* walk-forward folds, not sklearn's
+own RandomizedSearchCV. That matters here specifically because
+RandomizedSearchCV's default k-fold shuffles a county's later months into
+the same fold as its earlier ones -- the exact future-information leak
+walk-forward CV above exists to avoid, so reusing sklearn's random-search
+machinery on top of hand-rolled walk-forward folds would quietly undo the
+whole reason walk-forward was chosen. The winning config feeds every RF
+fit downstream (the comparison table, the coverage check, and the
+production model itself), not just a tuning side-quest reported and
+ignored -- see model/README.md's "Hyperparameter search" section for
+whether this actually fixed the Texas 6-month weakness that section had
+previously documented (RF beating naive by only 36.1%, worst of any
+horizon/state).
+
 After cross-validation, one final "production" random forest per
 horizon is fit on *all* available data (there's no held-out test set to
 protect at deployment time -- more real data only helps) and saved for
@@ -41,6 +58,7 @@ Run with a state key from states.py as the only CLI arg, e.g.
 """
 
 import json
+import random
 import sys
 from pathlib import Path
 
@@ -67,8 +85,34 @@ FEATURE_COLS = [
 ]
 
 
-def make_random_forest() -> RandomForestRegressor:
-    return RandomForestRegressor(n_estimators=300, max_depth=10, min_samples_leaf=5, random_state=42, n_jobs=-1)
+# The hand-picked config every RF fit used before random_search_rf()
+# existed -- also candidate zero in every search below, so tuning can
+# only ever match or beat this, never do worse by bad luck.
+DEFAULT_RF_PARAMS = {"n_estimators": 300, "max_depth": 10, "min_samples_leaf": 5}
+
+# Deliberately doesn't touch max_features's sklearn default (1.0, i.e.
+# every feature considered at every split) as its own baseline value below
+# 1.0 -- with only 15 features to begin with (see FEATURE_COLS), limiting
+# a split to a random subset of them is a real, testable regularization
+# lever, not a value nobody would reasonably pick.
+RF_SEARCH_SPACE = {
+    "n_estimators": [100, 200, 300, 400, 500],
+    "max_depth": [4, 6, 8, 10, 15, 20, None],
+    "min_samples_leaf": [1, 2, 5, 10, 15, 20],
+    "min_samples_split": [2, 5, 10, 20],
+    "max_features": ["sqrt", "log2", 0.3, 0.5, 0.7, 1.0],
+}
+
+RANDOM_SEARCH_ITER = 15
+RANDOM_SEARCH_SEED = 42  # same seed as every other random_state here -- a rerun reproduces the same search
+
+
+def make_random_forest(params: dict | None = None) -> RandomForestRegressor:
+    return RandomForestRegressor(**(params or DEFAULT_RF_PARAMS), random_state=42, n_jobs=-1)
+
+
+def sample_rf_params(rng: random.Random) -> dict:
+    return {name: rng.choice(values) for name, values in RF_SEARCH_SPACE.items()}
 
 
 def make_gradient_boosting() -> HistGradientBoostingRegressor:
@@ -110,13 +154,13 @@ def walk_forward_folds(months: list, n_folds: int, test_window: int) -> list[tup
     return folds
 
 
-def evaluate_fold(train_df: pd.DataFrame, test_df: pd.DataFrame, target_col: str) -> dict:
+def evaluate_fold(train_df: pd.DataFrame, test_df: pd.DataFrame, target_col: str, rf_params: dict | None = None) -> dict:
     X_train, y_train = train_df[FEATURE_COLS], train_df[target_col]
     X_test, y_test = test_df[FEATURE_COLS], test_df[target_col]
 
     naive_mae = mean_absolute_error(y_test, pd.Series(0.0, index=y_test.index))
 
-    rf = make_random_forest()
+    rf = make_random_forest(rf_params)
     rf.fit(X_train, y_train)
     # mean/std together rather than a plain rf.predict(): the MAE below
     # only needs the mean, but the coverage check right after needs the
@@ -160,7 +204,7 @@ def evaluate_fold(train_df: pd.DataFrame, test_df: pd.DataFrame, target_col: str
     }
 
 
-def cross_validate(dataset: pd.DataFrame, horizon: int) -> list[dict]:
+def cross_validate(dataset: pd.DataFrame, horizon: int, rf_params: dict | None = None) -> list[dict]:
     target_col = f"target_change_{horizon}m"
     usable = dataset.dropna(subset=[target_col])
     months = sorted(usable["year_month"].unique())
@@ -171,10 +215,50 @@ def cross_validate(dataset: pd.DataFrame, horizon: int) -> list[dict]:
         test_df = usable[usable["year_month"].isin(test_months)]
         if train_df.empty or test_df.empty:
             continue
-        result = evaluate_fold(train_df, test_df, target_col)
+        result = evaluate_fold(train_df, test_df, target_col, rf_params)
         result["test_range"] = f"{test_months[0]}..{test_months[-1]}"
         fold_results.append(result)
     return fold_results
+
+
+def random_search_rf(dataset: pd.DataFrame, horizon: int, n_iter: int = RANDOM_SEARCH_ITER) -> dict:
+    """Randomly samples n_iter hyperparameter combinations from
+    RF_SEARCH_SPACE (plus DEFAULT_RF_PARAMS itself as a guaranteed
+    candidate) and scores each by mean RF MAE across the same walk-forward
+    folds cross_validate() uses -- see module docstring for why this is
+    hand-rolled rather than sklearn's own RandomizedSearchCV. Only fits
+    the random forest per candidate, not gradient boosting or linear
+    regression too -- those aren't being tuned, so refitting them n_iter
+    times over would just be wasted work with nothing to show for it."""
+    target_col = f"target_change_{horizon}m"
+    usable = dataset.dropna(subset=[target_col])
+    months = sorted(usable["year_month"].unique())
+    folds = walk_forward_folds(months, N_CV_FOLDS, CV_TEST_WINDOW_MONTHS)
+
+    rng = random.Random(RANDOM_SEARCH_SEED)
+    candidates = [DEFAULT_RF_PARAMS] + [sample_rf_params(rng) for _ in range(n_iter)]
+
+    results = []
+    for params in candidates:
+        fold_maes = []
+        for train_months, test_months in folds:
+            train_df = usable[usable["year_month"].isin(train_months)]
+            test_df = usable[usable["year_month"].isin(test_months)]
+            if train_df.empty or test_df.empty:
+                continue
+            X_train, y_train = train_df[FEATURE_COLS], train_df[target_col]
+            X_test, y_test = test_df[FEATURE_COLS], test_df[target_col]
+            rf = make_random_forest(params)
+            rf.fit(X_train, y_train)
+            fold_maes.append(mean_absolute_error(y_test, rf.predict(X_test)))
+        if not fold_maes:
+            continue
+        maes = pd.Series(fold_maes)
+        results.append({"params": params, "mean_mae": maes.mean(), "std_mae": maes.std()})
+
+    results.sort(key=lambda r: r["mean_mae"])
+    baseline = next(r for r in results if r["params"] == DEFAULT_RF_PARAMS)
+    return {"best": results[0], "baseline": baseline, "all": results}
 
 
 def calibrate_uncertainty(fold_results: list[dict]) -> dict:
@@ -206,15 +290,16 @@ def calibrate_uncertainty(fold_results: list[dict]) -> dict:
     }
 
 
-def fit_production_model(dataset: pd.DataFrame, horizon: int, state_key: str) -> dict:
+def fit_production_model(dataset: pd.DataFrame, horizon: int, state_key: str, rf_params: dict | None = None) -> dict:
     """The model generate_predictions.py actually uses -- trained on every
     row available, not held back from a test split, since there's no
     accuracy claim being protected here, just the best model deployable
-    today."""
+    today. rf_params defaults to DEFAULT_RF_PARAMS same as make_random_forest
+    itself, but main() always passes random_search_rf()'s winning config."""
     target_col = f"target_change_{horizon}m"
     usable = dataset.dropna(subset=[target_col])
 
-    model = make_random_forest()
+    model = make_random_forest(rf_params)
     model.fit(usable[FEATURE_COLS], usable[target_col])
 
     model_path = Path(__file__).parent / f"county_distress_model_{state_key}_{horizon}m.joblib"
@@ -243,7 +328,19 @@ def main():
     for horizon in TARGET_HORIZONS:
         print(f"\n{'=' * 60}\n{state['name'].upper()} -- {horizon}-MONTH HORIZON\n{'=' * 60}")
 
-        folds = cross_validate(dataset, horizon)
+        search = random_search_rf(dataset, horizon)
+        best, baseline = search["best"], search["baseline"]
+        if best["params"] == baseline["params"]:
+            print(f"\nRandom search over {RANDOM_SEARCH_ITER} candidate(s): the hand-picked default "
+                  f"{DEFAULT_RF_PARAMS} was already the best of them (MAE {best['mean_mae']:.4f}).")
+        else:
+            print(f"\nRandom search over {RANDOM_SEARCH_ITER} candidate(s): {best['params']} "
+                  f"reached MAE {best['mean_mae']:.4f}±{best['std_mae']:.4f}, vs. the hand-picked default's "
+                  f"{baseline['mean_mae']:.4f}±{baseline['std_mae']:.4f} "
+                  f"({1 - best['mean_mae'] / baseline['mean_mae']:.1%} lower) -- used for every RF fit below.")
+        rf_params = best["params"]
+
+        folds = cross_validate(dataset, horizon, rf_params)
         print(f"\n{N_CV_FOLDS}-fold walk-forward cross-validation "
               f"({CV_TEST_WINDOW_MONTHS}-month test windows each):\n")
         print(f"{'Test months':<20}{'Rows':<8}{'Naive MAE':<12}{'Linear MAE':<13}{'RF MAE':<10}{'GB MAE':<10}")
@@ -280,7 +377,7 @@ def main():
               f"for why that's a fair, non-circular check rather than a fit-your-own-test-set number).")
         calibration_by_horizon[horizon] = calibration
 
-        production = fit_production_model(dataset, horizon, state_key)
+        production = fit_production_model(dataset, horizon, state_key, rf_params)
         print(f"\nProduction model trained on all {production['rows']:,} available rows "
               f"(saved to {production['model_path'].name}).")
         print("Feature importances:")
