@@ -1357,9 +1357,10 @@ def render_market_trends_page(state: dict) -> str:
           return 0.75 - 0.45 * uncertainty;  // ranges 0.30 (least confident) to 0.75 (most)
         }}
 
-        function buildTrendSvg(history, projectedValue) {{
+        function buildTrendSvg(history, projectedValue, std95) {{
           const width = 560, height = 150, pad = 28;
-          const allValues = history.map(h => h[1]).concat([projectedValue]);
+          const band = std95 != null ? [projectedValue - std95, projectedValue + std95] : [];
+          const allValues = history.map(h => h[1]).concat([projectedValue], band);
           const minV = Math.min(...allValues), maxV = Math.max(...allValues);
           const range = (maxV - minV) || 0.01;
           const n = history.length;
@@ -1371,7 +1372,21 @@ def render_market_trends_page(state: dict) -> str:
           const lastX = xAt(n - 1), lastY = yAt(history[n - 1][1]);
           const projX = xAt(n), projY = yAt(projectedValue);
 
+          // Drawn before the solid/dashed lines below so they render on top of it,
+          // not the other way around -- the actual/projected trend is the primary
+          // read, the confidence whisker is supporting context alongside it.
+          const bandSvg = std95 != null ? (() => {{
+            const topY = yAt(projectedValue + std95), botY = yAt(projectedValue - std95);
+            return `<line x1="${{projX}}" y1="${{topY}}" x2="${{projX}}" y2="${{botY}}"
+                          stroke="#2563eb" stroke-width="2" opacity="0.6" />
+                    <line x1="${{projX - 5}}" y1="${{topY}}" x2="${{projX + 5}}" y2="${{topY}}"
+                          stroke="#2563eb" stroke-width="2" opacity="0.6" />
+                    <line x1="${{projX - 5}}" y1="${{botY}}" x2="${{projX + 5}}" y2="${{botY}}"
+                          stroke="#2563eb" stroke-width="2" opacity="0.6" />`;
+          }})() : '';
+
           return `<svg viewBox="0 0 ${{width}} ${{height}}" style="width:100%;height:${{height}}px;">
+            ${{bandSvg}}
             <polyline points="${{points}}" fill="none" stroke="#334155" stroke-width="2" />
             <line x1="${{lastX}}" y1="${{lastY}}" x2="${{projX}}" y2="${{projY}}"
                   stroke="#b91c1c" stroke-width="2" stroke-dasharray="5,4" />
@@ -1407,10 +1422,11 @@ def render_market_trends_page(state: dict) -> str:
               ${{std != null ? `(&plusmn;${{(std * 100).toFixed(1)}} points, a calibrated ~68% confidence range` : ''}}
               ${{std95 != null ? `; up to &plusmn;${{(std95 * 100).toFixed(1)}} points at ~95% confidence)` : (std != null ? ')' : '')}}
             </p>
-            ${{buildTrendSvg(row.history, projectedValue)}}
+            ${{buildTrendSvg(row.history, projectedValue, std95)}}
             <p style="margin: 0.5rem 0 0; font-size: 0.8rem; color: #64748b;">
               Solid line: actual monthly price-cut share, last ${{row.history.length}} months.
               Dashed line: the model's projected value ${{horizonLabel.toLowerCase()}}, not another observed month.
+              ${{std95 != null ? `Blue bar: the ~95% confidence range around that projection.` : ''}}
             </p>
           `;
         }}
