@@ -105,12 +105,15 @@ def main():
 
     history = recent_history_by_county(dataset)
 
-    # c68 per horizon, fit by train_model.py's calibrate_uncertainty() on
-    # walk-forward CV residuals -- the raw tree-spread std below is
+    # c68/c95 per horizon, fit by train_model.py's calibrate_uncertainty()
+    # on walk-forward CV residuals -- the raw tree-spread std below is
     # measurably overconfident (see model/README.md's "Uncertainty
     # calibration" results), so it's scaled here before shipping rather than
     # sent as-is. See that function's docstring for why a scalar fit on
-    # held-out CV rows is a fair calibration, not a circular one.
+    # held-out CV rows is a fair calibration, not a circular one. Both
+    # factors are shipped -- change_{h}m_std (c68, ~68% coverage) is the
+    # range web.py shows by default, change_{h}m_std95 (c95, ~95% coverage)
+    # is the wider "worst case" figure alongside it.
     calibration = json.loads((Path(__file__).parent / f"county_distress_calibration_{state_key}.json").read_text())
 
     predictions = {}
@@ -118,11 +121,13 @@ def main():
         model = joblib.load(Path(__file__).parent / f"county_distress_model_{state_key}_{horizon}m.joblib")
         means, stds = predict_with_uncertainty(model, latest[FEATURE_COLS])
         c68 = calibration[str(horizon)]["c68"]
+        c95 = calibration[str(horizon)]["c95"]
         for county, mean, std in zip(latest["county"], means, stds):
             predictions.setdefault(county, {})[f"change_{horizon}m"] = round(float(mean), 4)
-            # Calibrated to ~68% historical coverage, not the raw per-tree
-            # spread -- see the calibration comment above.
+            # Calibrated to ~68%/~95% historical coverage, not the raw
+            # per-tree spread -- see the calibration comment above.
             predictions[county][f"change_{horizon}m_std"] = round(float(std) * c68, 4)
+            predictions[county][f"change_{horizon}m_std95"] = round(float(std) * c95, 4)
 
     output = []
     for _, row in latest.iterrows():

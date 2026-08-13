@@ -1395,6 +1395,7 @@ def render_market_trends_page(state: dict) -> str:
 
           const projectedValue = row.current_price_cut_pct + row[horizon];
           const std = row[horizon + '_std'];
+          const std95 = row[horizon + '_std95'];
           const sign = row[horizon] > 0 ? '+' : '';
 
           panel.innerHTML = `
@@ -1403,7 +1404,8 @@ def render_market_trends_page(state: dict) -> str:
               Current price-cut share: <b>${{(row.current_price_cut_pct * 100).toFixed(1)}}%</b>
               &middot; Model's ${{horizonLabel}} projection:
               <b>${{sign}}${{(row[horizon] * 100).toFixed(1)}} points</b>
-              ${{std != null ? `(&plusmn;${{(std * 100).toFixed(1)}} points, a calibrated ~68% confidence range)` : ''}}
+              ${{std != null ? `(&plusmn;${{(std * 100).toFixed(1)}} points, a calibrated ~68% confidence range` : ''}}
+              ${{std95 != null ? `; up to &plusmn;${{(std95 * 100).toFixed(1)}} points at ~95% confidence)` : (std != null ? ')' : '')}}
             </p>
             ${{buildTrendSvg(row.history, projectedValue)}}
             <p style="margin: 0.5rem 0 0; font-size: 0.8rem; color: #64748b;">
@@ -1443,11 +1445,12 @@ def render_market_trends_page(state: dict) -> str:
               const pct = (row[horizon] * 100).toFixed(1);
               const sign = row[horizon] > 0 ? '+' : '';
               const std = row[horizon + '_std'];
+              const std95 = row[horizon + '_std95'];
               layer.bindTooltip(
                 `<b>${{feature.properties.name}}</b><br>`
                 + `Current price-cut share: ${{(row.current_price_cut_pct * 100).toFixed(1)}}%<br>`
                 + `Predicted change (${{horizonLabel}}): ${{sign}}${{pct}} points`
-                + `${{std != null ? ` (&plusmn;${{(std * 100).toFixed(1)}})` : ''}}<br>`
+                + `${{std != null ? ` (&plusmn;${{(std * 100).toFixed(1)}}${{std95 != null ? `, up to &plusmn;${{(std95 * 100).toFixed(1)}} worst case` : ''}})` : ''}}<br>`
                 + `<span style="color:#64748b">as of ${{row.as_of}} -- click for trend chart</span>`
               );
               layer.on('click', () => showCountyDetail(row));
