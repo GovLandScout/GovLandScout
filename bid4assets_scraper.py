@@ -72,10 +72,16 @@ the same county (Monroe runs a new one most months), which is normal, not
 a bug: upsert_listing naturally collapses a re-listed parcel back onto the
 same row.
 
-Philadelphia is NOT covered here -- its sales run through a dedicated
-/philataxsales page with a different structure than the rest of this
-platform's county storefronts, not yet reverse-engineered. Worth
-revisiting; Philadelphia is the platform's largest single PA source.
+Philadelphia runs through a dedicated /philataxsales page, not the
+storefront/collection system every other county here uses -- see
+fetch_philadelphia_listings's own docstring for the reverse-engineering
+(2026-08-12) and why it turned out simpler to scrape than the rest of
+this platform, not harder: every listing's data, including a
+ready-to-geocode address, is already embedded in that one page's initial
+HTML, no per-property detail fetch needed. Handled as its own step in
+main(), before the discovered storefronts, since it isn't discovered the
+same way (see discover_pa_storefronts's own docstring for why it never
+matches).
 
 Two more structural things worth knowing before touching this file:
 
@@ -107,6 +113,7 @@ import combined_db
 
 BASE_URL = "https://www.bid4assets.com"
 COUNTY_SALES_URL = f"{BASE_URL}/county-tax-sales"
+PHILADELPHIA_URL = f"{BASE_URL}/philataxsales"
 DB_PATH = "bid4assets_properties.db"
 
 # No accessible robots.txt to calibrate against (see module docstring) --
@@ -247,6 +254,52 @@ def fetch_auction_detail(session: requests.Session, auction_id: int) -> dict | N
     }
 
 
+def fetch_philadelphia_listings(session: requests.Session) -> list[dict]:
+    """Philadelphia runs through a single dedicated page (/philataxsales),
+    not the storefront/collection system every other county here uses --
+    confirmed directly before writing this: its own listing text says
+    "Philadelphia Tax Sales", not "<County> County, PA", so it never
+    matched discover_pa_storefronts's COUNTY_NAME_PATTERN in the first
+    place (see that function's docstring). Turns out to be much simpler to
+    scrape than the rest of this platform, not harder: the page embeds
+    every current listing's full data -- including a ready-to-geocode
+    "street city state zip" Address field -- directly in its initial HTML
+    via the same COLLECTIONS_BLOB_PATTERN JSON blob the storefront pages
+    use, so there's no per-property detail-page fetch (and no
+    DETAIL_FETCH_DELAY_SECONDS pacing) needed at all for this county."""
+    resp = session.get(PHILADELPHIA_URL, headers=HEADERS, timeout=30)
+    resp.raise_for_status()
+
+    match = COLLECTIONS_BLOB_PATTERN.search(resp.text)
+    if match is None:
+        return []
+    try:
+        rows = json.loads(match.group(1))
+    except ValueError:
+        return []
+
+    listings = []
+    for row in rows:
+        status = (row.get("AuctionStatusString") or "").lower()
+        if any(keyword in status for keyword in INACTIVE_KEYWORDS):
+            continue
+        account_number = row.get("Apn")
+        auction_id = row.get("AuctionID")
+        if not account_number or not auction_id:
+            continue
+        minimum_bid = row.get("MinimumBid")
+        listings.append({
+            "county": "Philadelphia",
+            "account_number": str(account_number),
+            "auction_id": auction_id,
+            "minimum_bid": str(minimum_bid) if minimum_bid is not None else None,
+            "address": row.get("Address") or None,
+            "description": row.get("SaleType") or None,
+            "source_url": f"{BASE_URL}/auction/{auction_id}",
+        })
+    return listings
+
+
 def init_db(conn: sqlite3.Connection):
     conn.execute("""
         CREATE TABLE IF NOT EXISTS bid4assets_properties (
@@ -299,10 +352,49 @@ def upsert_local(conn: sqlite3.Connection, listing: dict):
     conn.commit()
 
 
+def store_listings(conn: sqlite3.Connection, listings: list[dict]) -> int:
+    """Shared write path for both Philadelphia's single-page listings and
+    every other county's per-storefront ones -- same three-phase DB
+    hygiene as the rest of this module (see module docstring): one
+    connection for the whole batch's writes, opened only after every slow
+    network request for this batch is already done, closed as soon as
+    writing finishes."""
+    write_conn = combined_db.get_connection()
+    for row_index, listing in enumerate(listings):
+        upsert_local(conn, listing)
+        combined_db.upsert_listing(
+            write_conn,
+            county=listing["county"],
+            account_number=listing["account_number"],
+            precinct=None,
+            minimum_bid=listing["minimum_bid"],
+            estimated_value=None,  # Bid4Assets doesn't publish an independent value estimate
+            address=listing["address"],
+            description=listing["description"],
+            status="Active",
+            source="bid4assets.com",
+            source_url=listing["source_url"],
+            state="PA",
+            commit=False,  # see combined_db.upsert_listing's docstring -- committing per-row across
+                            # potentially thousands of listings is what already blew a timeout for LGBS
+        )
+        if (row_index + 1) % COMMIT_BATCH_SIZE == 0:
+            write_conn.commit()
+    write_conn.commit()
+    write_conn.close()
+    return len(listings)
+
+
 def main():
     conn = sqlite3.connect(DB_PATH)
     init_db(conn)
     session = requests.Session()
+
+    print(f"Fetching {PHILADELPHIA_URL} ...")
+    philadelphia_listings = fetch_philadelphia_listings(session)
+    print(f"  Philadelphia: {len(philadelphia_listings)} listing(s) still available")
+    total_stored = store_listings(conn, philadelphia_listings) if philadelphia_listings else 0
+    time.sleep(LIST_API_DELAY_SECONDS)
 
     print(f"Fetching {COUNTY_SALES_URL} ...")
     resp = session.get(COUNTY_SALES_URL, headers=HEADERS, timeout=30)
@@ -310,7 +402,6 @@ def main():
     storefronts = discover_pa_storefronts(resp.text)
     print(f"Found {len(storefronts)} PA storefront(s): {storefronts}")
 
-    total_stored = 0
     consecutive_detail_failures = 0
     circuit_tripped = False
 
@@ -384,35 +475,10 @@ def main():
                 "source_url": f"{BASE_URL}/auction/{auction_id}" if auction_id else None,
             })
 
-        # Phase 3 (DB, fast): one connection for the whole county's writes,
-        # batched commits within it (see COMMIT_BATCH_SIZE) purely to keep
-        # any single commit's own work small, then closed -- there is no
-        # sleep() anywhere in this phase, so it runs in seconds, not
+        # Phase 3 (DB, fast): see store_listings's own docstring -- there is
+        # no sleep() anywhere in this phase, so it runs in seconds, not
         # minutes, regardless of how large the county's batch is.
-        write_conn = combined_db.get_connection()
-        for row_index, listing in enumerate(listings):
-            upsert_local(conn, listing)
-            combined_db.upsert_listing(
-                write_conn,
-                county=listing["county"],
-                account_number=listing["account_number"],
-                precinct=None,
-                minimum_bid=listing["minimum_bid"],
-                estimated_value=None,  # Bid4Assets doesn't publish an independent value estimate
-                address=listing["address"],
-                description=listing["description"],
-                status="Active",
-                source="bid4assets.com",
-                source_url=listing["source_url"],
-                state="PA",
-                commit=False,  # see combined_db.upsert_listing's docstring -- committing per-row across
-                                # potentially thousands of listings is what already blew a timeout for LGBS
-            )
-            total_stored += 1
-            if (row_index + 1) % COMMIT_BATCH_SIZE == 0:
-                write_conn.commit()
-        write_conn.commit()
-        write_conn.close()
+        total_stored += store_listings(conn, listings)
 
     conn.close()
     print(f"\n{total_stored} listing(s) stored into {DB_PATH}")

@@ -58,6 +58,20 @@ FILENAME_COUNTY_PATTERN = re.compile(r"\d{3,4}_([A-Za-z]+)\.pdf$", re.IGNORECASE
 COUNTY_NAME_OVERRIDES = {"Mclennan": "McLennan", "Mcmullen": "McMullen"}
 ACCOUNT_PATTERN = re.compile(r"Account\s*#\s*([A-Za-z0-9]+)", re.IGNORECASE)
 CITATION_END_PATTERN = re.compile(r"\bTexas\)\s*,")
+# A second, explicit source for the same field, seen after "Judgment
+# Through Tax Year: ..." at the very end of the cell -- see
+# parse_description_cell's docstring for why this is a fallback, not the
+# primary source.
+APPROXIMATE_ADDRESS_PATTERN = re.compile(r"Approximate Address:\s*(.+)$", re.IGNORECASE)
+# The legal description almost always names the incorporated city a
+# platted parcel sits in ("...to the City of Abilene, Taylor County,
+# Texas..."), when it's in one at all -- used as a geocoding-city fallback
+# for addresses that came from APPROXIMATE_ADDRESS_PATTERN above, which
+# (confirmed on real Taylor County data) is a bare street with no city of
+# its own. Rural/unplatted parcels described by survey/abstract instead of
+# city lot never have this phrase, which correctly leaves those addresses
+# without a fallback city rather than guessing one.
+CITY_OF_PATTERN = re.compile(r"City of ([A-Za-z .]+?),")
 
 
 def find_pdf_links() -> list[str]:
@@ -108,8 +122,19 @@ def parse_money(text: str | None) -> str | None:
 def parse_description_cell(text: str) -> tuple[str, str | None, str | None]:
     """
     'PROPERTY DESCRIPTION, APPROXIMATE ADDRESS, ACCT #' is one combined
-    cell. The address (when present) sits between the legal description's
-    closing deed citation ("...Texas),") and the "Account #" marker.
+    cell. The address (when present) usually sits between the legal
+    description's closing deed citation ("...Texas),") and the "Account #"
+    marker -- but some counties (confirmed on real 2026-09 data: Taylor)
+    leave that gap empty and only give the address in a separate,
+    explicitly-labeled "Approximate Address: ..." field after "Judgment
+    Through Tax Year: ..." at the very end of the cell instead. Checking
+    that second field only when the first comes up empty, not
+    unconditionally: a few counties (confirmed: Comanche) redundantly
+    include both, and the primary one is the more complete of the two
+    there (full city/state/zip vs. just a bare street in the trailing
+    label) -- so the primary field wins whenever it's actually present.
+    Some counties (confirmed: Leon) have neither; that's a real "no
+    address published for this listing," not a parsing gap.
     """
     joined = " ".join(l.strip() for l in text.split("\n") if l.strip())
     account_match = ACCOUNT_PATTERN.search(joined)
@@ -123,6 +148,24 @@ def parse_description_cell(text: str) -> tuple[str, str | None, str | None]:
     else:
         address = None
         legal_description = joined
+
+    if not address:
+        approx_match = APPROXIMATE_ADDRESS_PATTERN.search(joined)
+        if approx_match:
+            address = approx_match.group(1).strip().rstrip(",") or None
+
+    # A bare street from APPROXIMATE_ADDRESS_PATTERN has no city of its own
+    # to geocode against -- geocode_backfill.py's fallback for a cityless
+    # address is the *county* name, which Census reliably rejects (a
+    # county isn't a place), confirmed against real production data before
+    # writing this. Appending the legal description's own "City of X" here
+    # (see CITY_OF_PATTERN's docstring) fixes that at the source, for 84%
+    # of real Taylor County listings checked, rather than leaving every
+    # downstream geocode attempt for these addresses to fail the same way.
+    if address and "," not in address:
+        city_match = CITY_OF_PATTERN.search(joined)
+        if city_match:
+            address = f"{address}, {city_match.group(1).strip()}, TX"
 
     return legal_description, address, account
 

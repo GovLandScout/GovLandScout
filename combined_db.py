@@ -395,13 +395,28 @@ def upsert_listing(
             precinct = EXCLUDED.precinct,
             minimum_bid = EXCLUDED.minimum_bid,
             estimated_value = EXCLUDED.estimated_value,
-            address = EXCLUDED.address,
+            -- COALESCE, not a plain overwrite, for address/latitude/longitude:
+            -- every caller of this function defaults latitude/longitude to
+            -- None (no scraper geocodes itself -- that's geocode_backfill.py/
+            -- pa_parcel_geocode.py's job, run as separate steps afterward),
+            -- and several scrapers can legitimately come back with
+            -- address=None on a given run too (a tripped detail-fetch
+            -- circuit breaker, a site that just doesn't always publish one).
+            -- A plain overwrite here meant every single re-scrape of an
+            -- already-geocoded listing silently wiped its coordinates back
+            -- to NULL -- confirmed directly on 2026-08-13: Cumberland
+            -- County's listings, geocoded via pa_parcel_geocode.py earlier
+            -- this session, dropped to 0/397 geocoded after bid4assets_scraper.py's
+            -- next routine run. COALESCE keeps whatever's already stored
+            -- whenever this particular run didn't produce a real value,
+            -- while still accepting a genuine new value when one exists.
+            address = COALESCE(EXCLUDED.address, listings.address),
             description = EXCLUDED.description,
             status = EXCLUDED.status,
             source = EXCLUDED.source,
             source_url = EXCLUDED.source_url,
-            latitude = EXCLUDED.latitude,
-            longitude = EXCLUDED.longitude,
+            latitude = COALESCE(EXCLUDED.latitude, listings.latitude),
+            longitude = COALESCE(EXCLUDED.longitude, listings.longitude),
             last_seen = EXCLUDED.last_seen
         """,
         (
