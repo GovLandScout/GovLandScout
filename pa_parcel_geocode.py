@@ -25,20 +25,26 @@ Coverage is real but partial. Most counties below come from PA DEP's
 single statewide layer, but county participation in it is voluntary, and
 two of bid4assets.com's largest PA sources -- Monroe and Fayette -- have
 no rows in it at all as of 2026-08-11 (checked directly: COUNTY_NAME
-queries for both return zero). Fayette turned out to have its own
-separate per-county layer via PASDA instead (see FAYETTE_SOURCE below);
-Monroe's PASDA layer exists too but uses a parcel numbering scheme that
-doesn't match what bid4assets.com scrapes (see FAYETTE_SOURCE's own
-comment), so Monroe isn't covered by anything in this script. Monroe,
-plus every county not listed in PARCEL_ID_STRATEGIES below, is left to
-geocode_backfill.py's address-based approach -- this script only touches
-the counties below, each one verified against real production data
-before being added (see each strategy's own comment for its match rate).
+queries for both return zero). Fayette and Columbia turned out to have
+their own separate per-county layers via PASDA instead (see
+FAYETTE_SOURCE/COLUMBIA_SOURCE below); Monroe's PASDA layer exists too
+but uses a parcel numbering scheme that doesn't match what bid4assets.com
+scrapes (see FAYETTE_SOURCE's own comment), so Monroe isn't covered by
+anything in this script. Monroe, plus every county not listed in
+PARCEL_ID_STRATEGIES below, is left to geocode_backfill.py's
+address-based approach -- this script only touches the counties below,
+each one verified against real production data before being added (see
+each strategy's own comment for its match rate). Some counties' first
+attempt only caught part of that county's listings -- a second, wider
+account-number transform found later (see berks_bid4assets_transform's
+and fayette_bid4assets_transform's own docstrings) recovers more of them
+without changing anything about already-matched rows.
 
-Run after chester_scraper.py and (whenever its own separate weekly job
-runs) bid4assets_scraper.py have added this account_number, and before
-geocode_backfill.py so it isn't wasting Census requests re-attempting
-addresses this already resolved -- see run_daily_scrapers.py's ordering.
+Run after chester_scraper.py, montco_scraper.py, and (whenever its own
+separate weekly job runs) bid4assets_scraper.py have added this
+account_number, and before geocode_backfill.py so it isn't wasting Census
+requests re-attempting addresses this already resolved -- see
+run_daily_scrapers.py's ordering.
 """
 
 import re
@@ -125,6 +131,14 @@ FAYETTE_SOURCE = ParcelSource(
     id_field="TAXIDNUM", has_address=False,
 )
 
+# Same voluntary-participation gap as Fayette (checked directly: DEP has
+# zero Columbia rows), but PASDA has its own Columbia layer too -- a
+# different id field again (PIN) and, like Fayette's, geometry only.
+COLUMBIA_SOURCE = ParcelSource(
+    "https://imagery.pasda.psu.edu/arcgis/rest/services/pasda/ColumbiaCounty/MapServer/2/query",
+    id_field="PIN", has_address=False,
+)
+
 
 def identity(account_number: str) -> str:
     return account_number
@@ -136,12 +150,26 @@ def berks_bid4assets_transform(account_number: str) -> str:
     varying across real production rows, not a fixed constant) prepended
     to the 12-digit parcel id DEP's layer actually stores under PARCEL_ID.
     Verified against 1,269 real ungeocoded Berks listings before writing
-    this: stripping any 2-digit prefix (not just "12", an earlier and
-    wrong first guess that only matched 4% of them) reaches 1,238 (98%).
-    The remaining 17-character account numbers (197 listings, e.g.
-    "34439202554926B16") are a format this hasn't reverse-engineered and
-    are left unmatched rather than guessed at."""
-    return account_number[2:] if len(account_number) == 14 else account_number
+    this originally: stripping any 2-digit prefix (not just "12", an
+    earlier and wrong first guess that only matched 4% of them) reaches
+    1,238 (98%).
+
+    A second, longer format (197 listings, e.g. "34439202554926B16") looked
+    unrelated at first but turns out to be the exact same 14-character
+    "prefix + 12-digit id" shape with a 3-character suffix appended (e.g.
+    "T06", "B16", "C71" -- a sub-unit code, the same "one bid4assets number
+    covers several individually-listed sites within one larger parcel"
+    pattern as Cumberland's per-lot suffix, see
+    cumberland_bid4assets_transform). Taking just the first 14 characters
+    before stripping the 2-digit prefix handles both shapes with one
+    transform: verified against the 228 listings still ungeocoded after
+    the original 14-char-only version, 59 (26%) newly matched this way --
+    lower than the clean 14-char case, consistent with these being
+    sub-parcels that don't always get their own separate DEP entry."""
+    first14 = account_number[:14]
+    if not first14.isdigit() or len(first14) < 14:
+        return account_number
+    return first14[2:]
 
 
 CUMBERLAND_BASE_ID_PATTERN = re.compile(r"^(\d{2}-\d{2}-\d{4}-\d{3})")
@@ -162,6 +190,54 @@ def cumberland_bid4assets_transform(account_number: str) -> str:
     return match.group(1) if match else account_number
 
 
+def montgomery_dep_transform(account_number: str) -> str:
+    """Montgomery County's own account numbers are dash-formatted
+    ("13-00-04240-90-4"); DEP's PARCEL_ID for the same parcel is the exact
+    same digits with the dashes removed ("130004240904") -- confirmed on
+    real matched rows (e.g. "13-00-04240-90-4" -> DEP's "E Basin St",
+    matching the scraped "E BASIN ST, Norristown, PA"). Verified against
+    312 real ungeocoded Montgomery listings: 291 (93%) matched."""
+    return account_number.replace("-", "")
+
+
+FAYETTE_BASE_ID_PATTERN = re.compile(r"^(\d{2}-\d{2}-\d{4})")
+
+
+def fayette_bid4assets_transform(account_number: str) -> str:
+    """Most Fayette account numbers already match PASDA's TAXIDNUM as-is
+    (see FAYETTE_SOURCE's own 88% match rate), but a minority carry one or
+    two extra trailing segments PASDA's own id never has (e.g.
+    "14-24-0037-03-99" vs. TAXIDNUM's plain "14-24-0037") -- the same
+    "one bid4assets number can point at a sub-unit of a larger parcel"
+    shape as Cumberland and Berks above. This trims down to the shared
+    "NN-NN-NNNN" prefix every variant starts with, which is also a no-op
+    for account numbers already in that exact shape. Verified against the
+    215 listings still ungeocoded after the plain TAXIDNUM match: 119
+    (55%) newly matched this way."""
+    match = FAYETTE_BASE_ID_PATTERN.match(account_number)
+    return match.group(1) if match else account_number
+
+
+def columbia_bid4assets_transform(account_number: str) -> str:
+    """Columbia's account numbers ("07 05 01013000") carry more trailing
+    zeros in their third, space-separated segment than PASDA's own PIN
+    field does for the same parcel ("19 07 01300" for a different sample
+    parcel, but the same shorter shape) -- trimming trailing zeros off
+    that segment (down to a single "0" if the whole segment were zeros)
+    is a safe guess to try, not a validated rule the way the other
+    transforms above are: a wrong guess here just fails to match (this
+    project's parcel-lookup approach can only produce false negatives,
+    never a wrong coordinate -- see module docstring), and it's only
+    tried after PASDA's own id has already failed to match as-is.
+    Verified against 200 real ungeocoded Columbia listings: 35 (17%)
+    matched -- lower confidence than the other transforms here, but real."""
+    parts = account_number.split()
+    if len(parts) != 3:
+        return account_number
+    trimmed_third = parts[2].rstrip("0") or "0"
+    return f"{parts[0]} {parts[1]} {trimmed_third}"
+
+
 # (source, county) -> (ParcelSource to query, account_number -> candidate id transform).
 # `county` here matches combined_db's own `county` column exactly (see each
 # scraper's own county value), not necessarily a source's own casing for
@@ -171,9 +247,11 @@ def cumberland_bid4assets_transform(account_number: str) -> str:
 PARCEL_ID_STRATEGIES = {
     ("chesco.org", "Chester"): (dep_source("CHESTER"), identity),  # 308/349 (88%)
     ("bid4assets.com", "Schuylkill"): (dep_source("SCHUYLKILL"), identity),  # 524/579 (91%)
-    ("bid4assets.com", "Berks"): (dep_source("BERKS"), berks_bid4assets_transform),  # 1,238/1,466 (84%)
+    ("bid4assets.com", "Berks"): (dep_source("BERKS"), berks_bid4assets_transform),  # 1,238/1,466 (84%), +59/228 (26%) after generalizing to the lettered-suffix format
     ("bid4assets.com", "Cumberland"): (dep_source("CUMBERLAND"), cumberland_bid4assets_transform),  # ~146/256 (57%)
-    ("bid4assets.com", "Fayette"): (FAYETTE_SOURCE, identity),  # ~1,637/1,861 (88%), coordinates only, no address
+    ("bid4assets.com", "Fayette"): (FAYETTE_SOURCE, fayette_bid4assets_transform),  # ~1,637/1,861 (88%) + 119/215 (55%) after trimming extra segments, coordinates only, no address
+    ("montgomerycountypa.gov", "Montgomery"): (dep_source("MONTGOMERY"), montgomery_dep_transform),  # 291/312 (93%)
+    ("bid4assets.com", "Columbia"): (COLUMBIA_SOURCE, columbia_bid4assets_transform),  # 35/200 (17%), coordinates only, no address
 }
 
 
