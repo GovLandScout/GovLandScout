@@ -2,14 +2,21 @@
 GovLandScout - Geocoding backfill
 
 Fills in latitude/longitude for listings that have a usable address but no
-coordinates -- most notably all of Harris County (hctax_scraper.py never
-geocodes), plus smaller gaps scattered across other counties/sources.
-Listings with no address at all can't be geocoded from this script; they
-need a different data source (e.g. HCAD's own parcel data, like
-hcad_value_backfill.py already pulls for estimated_value).
+coordinates. Listings with no address at all can't be geocoded from this
+script; they need a different data source (e.g. HCAD's own parcel data
+for Harris County, TX -- see hcad_address_backfill.py, run separately and
+occasionally since it's a 200MB+ bulk download, not part of this script
+or the daily pipeline).
 
 Uses the Census Bureau's free, keyless batch geocoder -- a single POST
 with a CSV of up to 10,000 addresses, rather than one request per address.
+A handful of addresses the batch endpoint can't confidently pick a single
+match for ("Tie", not "No_Match" -- see resolve_tie()) get a second,
+one-at-a-time pass against the same geocoder's single-address endpoint,
+which resolves them; in every real case checked so far this project's own
+Tie results turn out to be an address the batch endpoint could resolve
+fine, just missing a zip code, not a genuinely ambiguous street.
+
 Run as the last step of run_daily_scrapers.py, once, after every scraper
 that could have added a new address has already run -- geocoding a fixed
 street address doesn't change day to day, so there's nothing to gain from
@@ -20,12 +27,20 @@ running it more than once per day. Can still be run by hand any time too
 import csv
 import io
 import re
+import time
 
 import requests
 
 import combined_db
 
 BATCH_GEOCODE_URL = "https://geocoding.geo.census.gov/geocoder/locations/addressbatch"
+SINGLE_GEOCODE_URL = "https://geocoding.geo.census.gov/geocoder/locations/onelineaddress"
+
+# A short pause between resolve_tie() calls -- these run one at a time
+# (the single-address endpoint has no batch form), and there are only
+# ever a few dozen of them per run (see main()), so this costs seconds,
+# not minutes, while still not hammering the endpoint request-by-request.
+TIE_RESOLVE_DELAY_SECONDS = 0.3
 
 # Rough (lat_min, lat_max, lon_min, lon_max) boxes, padded past each state's
 # real border rather than drawn tight to it. On 2026-08-06 six real
@@ -169,7 +184,11 @@ def build_batch_csv(rows: list[tuple[str, str, str, str, str]]) -> str:
     return buf.getvalue()
 
 
-def geocode_batch(csv_text: str) -> dict[str, tuple[float, float]]:
+def geocode_batch(csv_text: str) -> tuple[dict[str, tuple[float, float]], list[str]]:
+    """(matches, tie_ids) -- tie_ids are rows the batch endpoint refused to
+    guess between (see resolve_tie()'s docstring for what to do with them),
+    kept separate from a plain No_Match, which means the endpoint found
+    nothing at all, not something it couldn't choose between."""
     resp = requests.post(
         BATCH_GEOCODE_URL,
         files={"addressFile": ("addresses.csv", csv_text, "text/csv")},
@@ -179,15 +198,45 @@ def geocode_batch(csv_text: str) -> dict[str, tuple[float, float]]:
     resp.raise_for_status()
 
     found = {}
+    tie_ids = []
     reader = csv.reader(io.StringIO(resp.text))
     for row in reader:
         # Match: id, input address, "Match", match type, matched address, "lon,lat", tiger line id, side
-        # No_Match: just id, input address, "No_Match" -- no coordinate columns at all
+        # Tie/No_Match: just id, input address, status -- no coordinate columns at all
         unique_id, status = row[0], row[2]
         if status == "Match":
             lon, lat = row[5].split(",")
             found[unique_id] = (float(lat), float(lon))
-    return found
+        elif status == "Tie":
+            tie_ids.append(unique_id)
+    return found, tie_ids
+
+
+def resolve_tie(street: str, city: str, state: str, zip_code: str) -> tuple[float, float] | None:
+    """The batch endpoint (geocode_batch above) reports "Tie" rather than
+    picking a match when it finds more than one equally-plausible
+    candidate -- confirmed directly against real production rows before
+    writing this: addresses like "1022 GREEN ST, Norristown, PA" (a real
+    street + real city, just no zip -- Montgomery County's own scraper
+    never captures one) come back "Tie" from the batch endpoint but a
+    single, specific match from this same Census geocoder's other
+    endpoint, /locations/onelineaddress, which doesn't refuse to pick one.
+    Every Tie this project has actually inspected has been exactly this
+    shape (missing zip, not a genuinely ambiguous street), so taking that
+    single endpoint's first choice is a reasonable recovery, not blind
+    guessing -- still checked against is_within_state_bounds by the
+    caller, the same safety net every other geocoded coordinate here
+    gets."""
+    address = f"{street}, {city}, {state} {zip_code}".strip()
+    resp = requests.get(SINGLE_GEOCODE_URL, params={
+        "address": address, "benchmark": "Public_AR_Current", "format": "json",
+    }, timeout=30)
+    resp.raise_for_status()
+    matches = resp.json().get("result", {}).get("addressMatches", [])
+    if not matches:
+        return None
+    coords = matches[0]["coordinates"]
+    return coords["y"], coords["x"]  # (lat, lon)
 
 
 def main():
@@ -221,15 +270,21 @@ def main():
         conn.close()
         return
 
+    # id -> its own (street, city, state, zip) row, needed after the batch
+    # pass to re-look-up Tie ids one at a time (see resolve_tie() below).
+    id_to_row = {row[0]: row[1:] for row in batch_rows}
+
     # Census batch endpoint caps a single file at 10,000 records.
     updated = 0
     rejected = 0
+    all_tie_ids = []
     for i in range(0, len(batch_rows), 10_000):
         chunk = batch_rows[i:i + 10_000]
         csv_text = build_batch_csv(chunk)
         print(f"Geocoding {len(chunk)} addresses ...")
-        matches = geocode_batch(csv_text)
-        print(f"Matched {len(matches)} of {len(chunk)}.")
+        matches, tie_ids = geocode_batch(csv_text)
+        print(f"Matched {len(matches)} of {len(chunk)} ({len(tie_ids)} more came back Tie).")
+        all_tie_ids.extend(tie_ids)
 
         for unique_id, (lat, lon) in matches.items():
             county, account_number, listing_state = id_to_key[unique_id]
@@ -245,7 +300,28 @@ def main():
             combined_db.update_lat_lon(conn, county, account_number, lat, lon, state=listing_state)
             updated += 1
 
-    print(f"Backfilled coordinates for {updated} listings"
+    tie_recovered = 0
+    if all_tie_ids:
+        print(f"Resolving {len(all_tie_ids)} Tie result(s) one at a time (see resolve_tie())...")
+        for i, unique_id in enumerate(all_tie_ids):
+            if i > 0:
+                time.sleep(TIE_RESOLVE_DELAY_SECONDS)
+            street, city, geocode_state, zip_code = id_to_row[unique_id]
+            resolved = resolve_tie(street, city, geocode_state, zip_code)
+            if resolved is None:
+                continue
+            lat, lon = resolved
+            county, account_number, listing_state = id_to_key[unique_id]
+            if not is_within_state_bounds(listing_state, lat, lon):
+                print(f"  REJECTED (Tie) {county}, {listing_state} #{account_number}: "
+                      f"geocoded to ({lat}, {lon}), outside {listing_state}'s bounds")
+                rejected += 1
+                continue
+            combined_db.update_lat_lon(conn, county, account_number, lat, lon, state=listing_state)
+            tie_recovered += 1
+        print(f"Recovered {tie_recovered} of {len(all_tie_ids)} Tie result(s).")
+
+    print(f"Backfilled coordinates for {updated + tie_recovered} listings"
           + (f" ({rejected} rejected as outside their state's bounds)." if rejected else "."))
     conn.close()
 
