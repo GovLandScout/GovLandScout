@@ -465,7 +465,21 @@ def upsert_historical_listing(
         ON CONFLICT (county, account_number, sale_date) DO UPDATE SET
             precinct = EXCLUDED.precinct,
             is_cancelled = EXCLUDED.is_cancelled,
-            minimum_bid = EXCLUDED.minimum_bid,
+            -- COALESCE, not a plain overwrite: minimum_bid comes from
+            -- collin_scraper.py's fetch_pdf_details(), which explicitly
+            -- returns {} (so minimum_bid ends up None) on any transient
+            -- PDF-fetch failure -- "best-effort: a listing is still worth
+            -- keeping if the PDF is unreachable" (see that function's own
+            -- docstring). A plain overwrite here meant a later re-scrape
+            -- hitting a one-off network blip would silently wipe a
+            -- minimum_bid this same script had already successfully
+            -- extracted on a previous run -- same bug class as
+            -- upsert_listing's above, just against this hidden research
+            -- table instead of the live one. address/description/precinct/
+            -- is_cancelled aren't at the same risk -- they come from the
+            -- listing page's own reliable parse, not this fetch, so they
+            -- stay plain overwrites.
+            minimum_bid = COALESCE(EXCLUDED.minimum_bid, historical_listings.minimum_bid),
             address = EXCLUDED.address,
             description = EXCLUDED.description,
             source = EXCLUDED.source,
