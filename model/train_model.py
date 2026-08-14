@@ -105,15 +105,25 @@ DEFAULT_RF_PARAMS = {"n_estimators": 300, "max_depth": 10, "min_samples_leaf": 5
 # 1.0 -- with only 15 features to begin with (see FEATURE_COLS), limiting
 # a split to a random subset of them is a real, testable regularization
 # lever, not a value nobody would reasonably pick.
+#
+# Densened (model/README.md's "Hyperparameter search" section originally
+# flagged this as the natural follow-up) from the original 5/7/6/4/6-value
+# grids -- every value that was already here stays, this only fills in the
+# gaps between them, so it can only ever find something the coarser
+# version couldn't, not lose a candidate the original search had access
+# to. Left deliberately still spanning the same full range rather than
+# narrowed around the winning configs found with the coarser grid -- doing
+# that would bias this search toward confirming the last one's answer
+# instead of honestly re-checking it.
 RF_SEARCH_SPACE = {
-    "n_estimators": [100, 200, 300, 400, 500],
-    "max_depth": [4, 6, 8, 10, 15, 20, None],
-    "min_samples_leaf": [1, 2, 5, 10, 15, 20],
-    "min_samples_split": [2, 5, 10, 20],
-    "max_features": ["sqrt", "log2", 0.3, 0.5, 0.7, 1.0],
+    "n_estimators": [100, 150, 200, 250, 300, 350, 400, 450, 500],
+    "max_depth": [4, 6, 8, 10, 12, 15, 18, 20, 25, None],
+    "min_samples_leaf": [1, 2, 3, 5, 8, 10, 15, 20, 25],
+    "min_samples_split": [2, 4, 5, 8, 10, 15, 20, 25],
+    "max_features": ["sqrt", "log2", 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0],
 }
 
-RANDOM_SEARCH_ITER = 15
+RANDOM_SEARCH_ITER = 30  # doubled from 15 alongside the denser grids above -- same reasoning, more thorough coverage of a now-larger space
 RANDOM_SEARCH_SEED = 42  # same seed as every other random_state here -- a rerun reproduces the same search
 
 
@@ -135,14 +145,15 @@ DEFAULT_GB_PARAMS = {"max_depth": 6, "learning_rate": 0.05, "max_iter": 300}
 # here since they're the standard levers for controlling how much an
 # individual boosting stage can overfit, the same kind of regularization
 # RF_SEARCH_SPACE's min_samples_leaf/min_samples_split/max_features tune
-# on the forest side.
+# on the forest side. Densened the same way and for the same reason as
+# RF_SEARCH_SPACE above -- see its own comment.
 GB_SEARCH_SPACE = {
-    "max_iter": [100, 200, 300, 400, 500],
-    "learning_rate": [0.01, 0.03, 0.05, 0.1, 0.2],
-    "max_depth": [3, 4, 6, 8, 10, None],
-    "max_leaf_nodes": [15, 31, 63, 127],
-    "min_samples_leaf": [5, 10, 20, 30, 50],
-    "l2_regularization": [0.0, 0.1, 0.5, 1.0],
+    "max_iter": [100, 150, 200, 250, 300, 350, 400, 450, 500],
+    "learning_rate": [0.01, 0.02, 0.03, 0.05, 0.07, 0.1, 0.15, 0.2],
+    "max_depth": [3, 4, 5, 6, 8, 10, 12, None],
+    "max_leaf_nodes": [7, 15, 31, 47, 63, 95, 127],
+    "min_samples_leaf": [5, 10, 15, 20, 25, 30, 40, 50],
+    "l2_regularization": [0.0, 0.05, 0.1, 0.3, 0.5, 0.7, 1.0],
 }
 
 

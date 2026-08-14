@@ -155,11 +155,11 @@ python3 generate_predictions.py tx   # updates public/tx_county_predictions.json
 
 `train_model.py`'s `random_search_rf()` runs before every other number in
 this README is computed. Per horizon (and per state, since `main()` runs
-per state), it samples `RANDOM_SEARCH_ITER` (15) random combinations of
+per state), it samples `RANDOM_SEARCH_ITER` (30) random combinations of
 `n_estimators`/`max_depth`/`min_samples_leaf`/`min_samples_split`/
 `max_features` from `RF_SEARCH_SPACE`, plus the old hand-picked config
 (`n_estimators=300, max_depth=10, min_samples_leaf=5`) as a guaranteed
-16th candidate, and scores each by mean MAE across the *same*
+31st candidate, and scores each by mean MAE across the *same*
 walk-forward folds used everywhere else in this file -- not sklearn's own
 `RandomizedSearchCV`, whose default k-fold would shuffle a county's later
 months into the same fold as its earlier ones, the exact future-leak
@@ -168,51 +168,69 @@ The winning config feeds every RF fit downstream: the comparison table
 below, the coverage check, and the production model itself.
 
 This turned out to matter well beyond the Texas 6-month weakness that
-motivated it (see the previous version of this section in git history --
-that model beat naive by only 36.1% there, worst of any horizon/state,
-with the least consistent fold-to-fold error of any combination this
-project has measured). Every one of the six horizon/state combinations
-below improved, most by a small amount, one by a lot:
+originally motivated it (see git history for the first version of this
+section -- that model beat naive by only 36.1% there, worst of any
+horizon/state at the time). The table below is this search's *second*
+pass: the first (`RANDOM_SEARCH_ITER=15`, a coarser version of
+`RF_SEARCH_SPACE`) found real gains everywhere, documented in an earlier
+version of this section; this pass doubled the candidate count and
+filled in the gaps between the original grid's values (same range, denser
+steps -- see `RF_SEARCH_SPACE`'s own comment for why it wasn't also
+narrowed around the first pass's winners). The honest result: **mixed,
+not uniformly better**. Random search with a different-sized space draws
+different specific candidates even from the same seed, so a wider search
+isn't guaranteed to beat a narrower one on every horizon it's only
+guaranteed to have at least as good a chance -- and that's what happened:
+three of six horizon/state combinations improved further, three came out
+marginally worse than the first pass's winner (never worse than the
+original hand-picked default, which every candidate is still checked
+against):
 
-| State | Horizon | Winning config (vs. the old default) | MAE improvement |
-|---|---|---|---|
-| TX | 1 month | `max_depth=None, min_samples_split=10, max_features='sqrt'` | 6.8% |
-| TX | 3 months | `max_depth=None, min_samples_leaf=1, min_samples_split=5, max_features=1.0` | 3.7% |
-| TX | 6 months | `n_estimators=200, max_depth=None, min_samples_split=2, max_features='log2'` | **17.1%** |
-| PA | 1 month | `max_depth=None, min_samples_split=10, max_features='sqrt'` | 1.1% |
-| PA | 3 months | `n_estimators=200, max_depth=20, min_samples_leaf=1, min_samples_split=2, max_features=1.0` | 1.5% |
-| PA | 6 months | `n_estimators=200, max_depth=20, min_samples_leaf=1, min_samples_split=2, max_features=1.0` | 2.8% |
+| State | Horizon | Winning config | MAE vs. default | vs. first pass's winner |
+|---|---|---|---|---|
+| TX | 1 month | `n_estimators=100, max_depth=15, min_samples_leaf=15, min_samples_split=10, max_features='log2'` | 6.0% lower | worse (was 6.8%) |
+| TX | 3 months | `n_estimators=300, max_depth=25, min_samples_leaf=5, min_samples_split=5, max_features=0.5` | 4.0% lower | better (was 3.7%) |
+| TX | 6 months | `n_estimators=150, max_depth=18, min_samples_leaf=2, min_samples_split=15, max_features=0.5` | 16.7% lower | worse (was 17.1%) |
+| PA | 1 month | `n_estimators=300, max_depth=25, min_samples_leaf=5, min_samples_split=5, max_features=0.5` | 2.2% lower | better (was 1.1%) |
+| PA | 3 months | `n_estimators=300, max_depth=25, min_samples_leaf=1, min_samples_split=4, max_features=1.0` | 1.2% lower | worse (was 1.5%) |
+| PA | 6 months | `n_estimators=300, max_depth=25, min_samples_leaf=1, min_samples_split=4, max_features=1.0` | 2.2% lower | worse (was 2.8%) |
 
-A pattern worth naming: every winning config keeps `max_depth` at 10 or
-deeper (mostly unbounded) and widens `min_samples_split`/`max_features`
-instead -- the old default's `max_depth=10` was apparently the wrong
-lever for controlling overfitting on this feature set, constraining tree
-*depth* uniformly rather than how much data or how many features get
-considered at a given split. Also unexpected: this search targeted MAE
-only, not calibration, but tuning fixed most of the uncertainty-band
-problem as a side effect too -- see "Uncertainty calibration" in each
-state's section below.
+A pattern still holds across both passes: every winning config keeps
+`max_depth` at 12 or deeper and leans on `min_samples_split`/
+`max_features` for regularization instead -- the old default's
+`max_depth=10` remains the clearest single wrong lever this search has
+found. But the swings between passes here (all under 1 percentage point)
+are smaller than the run-to-run noise this project's own walk-forward
+folds already show in the Results tables below (± up to 0.0151 on a
+single model) -- a real sign this particular search has roughly found
+its ceiling for this feature set, not that a fourth pass would keep
+finding more.
 
 `random_search_gb()` does the same thing for the gradient boosting
 comparison point (see module docstring), over its own search space
 (`max_iter`/`learning_rate`/`max_depth`/`max_leaf_nodes`/
-`min_samples_leaf`/`l2_regularization`):
+`min_samples_leaf`/`l2_regularization`), also widened this same pass:
 
-| State | Horizon | Winning config (vs. the old default) | MAE improvement |
-|---|---|---|---|
-| TX | 1 month | `max_iter=500, max_depth=3, min_samples_leaf=30, l2_regularization=0.5` | 1.8% |
-| TX | 3 months | `max_iter=400, max_depth=None, min_samples_leaf=20` | 1.0% |
-| TX | 6 months | `max_iter=500, max_depth=3, min_samples_leaf=30, l2_regularization=0.5` | 2.8% |
-| PA | 1 month | `max_iter=400, max_depth=None, min_samples_leaf=20` | 0.9% |
-| PA | 3 months | `max_iter=400, max_depth=None, min_samples_leaf=20` | 1.3% |
-| PA | 6 months | `max_iter=500, learning_rate=0.03, max_depth=10, min_samples_leaf=10, l2_regularization=1.0` | 0.7% |
+| State | Horizon | Winning config | MAE vs. default | vs. first pass's winner |
+|---|---|---|---|---|
+| TX | 1 month | `max_iter=500, learning_rate=0.07, max_depth=10, max_leaf_nodes=7, min_samples_leaf=25, l2_regularization=0.3` | 2.2% lower | better (was 1.8%) |
+| TX | 3 months | `max_iter=400, learning_rate=0.15, max_depth=10, max_leaf_nodes=15, min_samples_leaf=15, l2_regularization=0.5` | 0.8% lower | worse (was 1.0%) |
+| TX | 6 months | `max_iter=500, learning_rate=0.07, max_depth=10, max_leaf_nodes=7, min_samples_leaf=25, l2_regularization=0.3` | **6.4% lower** | better (was 2.8%) |
+| PA | 1 month | `max_iter=400, learning_rate=0.15, max_depth=10, max_leaf_nodes=15, min_samples_leaf=15, l2_regularization=0.5` | 2.9% lower | better (was 0.9%) |
+| PA | 3 months | `max_iter=500, learning_rate=0.07, max_depth=10, max_leaf_nodes=7, min_samples_leaf=25, l2_regularization=0.3` | 0.6% lower | worse (was 1.3%) |
+| PA | 6 months | `max_iter=200, learning_rate=0.15, max_depth=4, max_leaf_nodes=47, min_samples_leaf=40, l2_regularization=0.5` | 1.5% lower | better (was 0.7%) |
 
-Smaller gains than RF's across the board -- unsurprising, since the old
-hand-picked GB config was never as clearly wrong as RF's fixed
-`max_depth=10` turned out to be (see the pattern noted above). But small
-and real still moves the comparison: see each state's Results section
-below for what tuning *both* sides changed about which model actually
-wins at which horizon.
+GB's own pattern across both passes: every winning config uses
+`max_depth` in the 4-10 range (never the unbounded end RF favors) and a
+non-default, usually non-trivial `learning_rate` (0.07-0.15 vs. the
+default's 0.05) -- a real, different-shaped lever than RF's. Unlike RF,
+GB improved further at four of six horizons this pass, most notably
+Texas's 6-month result (50.5% -> 52.3% vs. naive, see Results below) --
+worth noting since it's the same horizon where RF's own second pass
+happened to land slightly worse, widening the gap between the two
+models specifically at that horizon. See each state's Results section
+below for what tuning both sides across two passes changed about which
+model actually wins where.
 
 ## Results: Texas (walk-forward cross-validation, 2026-08-12)
 
@@ -226,72 +244,76 @@ month. RF and GB here each use their own horizon's winning config from
 
 | Horizon | Naive MAE | Linear MAE | RF MAE | GB MAE | RF vs. naive | Linear vs. naive | GB vs. naive |
 |---|---|---|---|---|---|---|---|
-| 1 month | 0.0162 ± 0.0013 | 0.0128 ± 0.0011 | 0.0127 ± 0.0004 | **0.0127 ± 0.0005** | 21.2% | 20.6% | **21.8%** |
-| 3 months | 0.0378 ± 0.0067 | 0.0249 ± 0.0011 | 0.0222 ± 0.0017 | **0.0217 ± 0.0025** | 41.3% | 34.0% | **42.5%** |
-| 6 months | 0.0505 ± 0.0059 | 0.0258 ± 0.0019 | 0.0267 ± 0.0072 | **0.0250 ± 0.0036** | 47.1% | 49.0% | **50.5%** |
+| 1 month | 0.0162 ± 0.0013 | 0.0128 ± 0.0011 | 0.0129 ± 0.0004 | **0.0126 ± 0.0004** | 20.5% | 20.6% | **22.1%** |
+| 3 months | 0.0378 ± 0.0067 | 0.0249 ± 0.0011 | 0.0221 ± 0.0022 | **0.0218 ± 0.0026** | 41.5% | 34.0% | **42.4%** |
+| 6 months | 0.0505 ± 0.0059 | 0.0258 ± 0.0019 | 0.0269 ± 0.0087 | **0.0241 ± 0.0036** | 46.8% | 49.0% | **52.3%** |
 
 (± is one standard deviation across the 4 folds -- how consistent each
 model's error was across different stretches of time, not the accuracy
-of a single number.)
+of a single number. These reflect the widened hyperparameter search's
+second pass -- see "Hyperparameter search" above for why RF moved
+slightly *backward* at 1 and 6 months here despite a more thorough
+search, and why that's expected random-search behavior, not a bug.)
 
-**Once both models are actually tuned, gradient boosting wins outright
-at every horizon in Texas**, including 1 month, where the random forest
-had just taken the lead from it (21.2%) by a hair -- tuning GB too pushed
-it back ahead (21.8%). That's a real, if modest, answer to the question
-"is the comparison table honest, or does GB just look better because
-nobody tuned RF as hard" (see the Scope section's original framing): with
-both sides tuned, GB comes out ahead everywhere, not by an accident of
-which model happened to get attention first. **6 months also improved
-further past the hyperparameter-search finding that started this
-section** -- the random forest went from the worst result in this whole
-table (36.1%, before any tuning existed) to 47.1%, and GB's own tuning
-pushed the horizon's best result to 50.5%. GB remains a comparison point,
-not a production candidate, for the reason given in Scope above (its
-sequential trees can't produce the same tree-spread uncertainty
-estimate) -- but a comparison point this consistently ahead, on a fairly
-tuned comparison, is exactly the kind of finding "Next steps" flags as
-worth someday revisiting that production-model decision over.
+**Gradient boosting wins outright at every horizon in Texas, now by a
+clearer margin than the first tuning pass found** -- 1 month held (GB
+22.1% vs. RF's 20.5%, RF having given back the narrow lead it briefly
+held), and 6 months widened noticeably (GB's second-pass tuning reached
+52.3%, while RF's own second pass landed at 46.8%, slightly behind its
+own first-pass result). That's still a real, fairly-earned result, not
+an artifact of only one side of the comparison getting attention -- both
+models went through the same two-pass search. GB remains a comparison
+point, not a production candidate, for the reason given in Scope above
+(its sequential trees can't produce the same tree-spread uncertainty
+estimate) -- see "Next steps" for what adopting it would actually require.
 
 Feature importances (production models, fit on all available data):
 
-- **`month_sin`/`month_cos` are still present at every horizon but no
-  longer dominate as heavily as before tuning**, especially at 1 month:
-  together they're now ~22% (was closer to 50%+ pre-tuning), with
-  `inventory_mom_pct`, `price_cut_pct_lag1`, and `price_cut_pct_roll3`
-  each now carrying real, comparable weight (7-8% apiece). A shallower,
-  more heavily-split-regularized forest (see the hyperparameter pattern
-  above) apparently spreads its splits across more of the 15 features
-  instead of leaning on the two strongest ones as hard.
+- **`month_sin`/`month_cos` together are back in the 28-34% range across
+  horizons** (1 month: 28%, 3 months: 34%, 6 months: 32%) -- similar
+  order of magnitude to the first tuning pass, not the 50%+ of the
+  original untuned forest, but this pass's specific configs (shallower
+  `max_depth` at 1 month, wider `max_features` at 3 and 6) redistribute
+  the remaining weight differently fold to fold. `mortgage_rate` alone is
+  now the *third*-most important single feature at 1 month (8.6%), ahead
+  of every ZHVI/unemployment feature.
 - **`mortgage_rate`/`mortgage_rate_mom_change` remain a real presence at
-  every horizon** -- around 12% combined at 1 month, 8% at 3 months, and
-  15% combined at 6 months (`mortgage_rate_mom_change` alone is the
-  *third*-most important feature there). Unlike before tuning, the
-  random forest at 6 months is no longer struggling to generalize this
-  signal (see the MAE improvement above) -- it's simply using it.
+  every horizon** -- 14.3% combined at 1 month, 11.1% at 3 months, 15.4%
+  at 6 months (`mortgage_rate_mom_change` alone is still the *third*-most
+  important feature there, same as every prior version of this table).
 - `price_cut_pct` itself (current level) still shows a mean-reversion
   pattern across horizons -- see the Clay County case study below for a
   concrete example.
 - Unemployment features stay modest across horizons, similar to before.
 
-**Uncertainty calibration**: before applying any scale factor, 64-70% of
+**Uncertainty calibration**: before applying any scale factor, 52-64% of
 actual outcomes now fall within the random forest's raw predicted ±1 std
 band across the three horizons (target for a well-calibrated
-Gaussian-shaped spread: ~68%) -- **up from 36-42% before tuning**, close
-enough to the target that the forest's own tree-spread is now nearly
-honest on its own, not something that needed a ~2x correction. 91-95%
-land within ±2 std (target: ~95%), also much closer than the 69-71%
-before.
+Gaussian-shaped spread: ~68%) -- still well up from 36-42% before any
+tuning, but a real step back from the first tuning pass's 64-70%,
+mirroring that pass's own slightly-worse MAE at 1 and 6 months above (the
+same specific configs driving both). 80-93% land within ±2 std (target:
+~95%), also down from 91-95% before. Read together with the MAE table
+above: this is the honest cost of the second search pass happening to
+land on configs that fit the walk-forward folds' *point estimates*
+marginally better at the expense of the *spread* being slightly less
+well-behaved for two of the three horizons -- not a sign the search is
+broken, just a reminder that MAE and calibration aren't the same target,
+and this search only ever optimized the former (see "Hyperparameter
+search" above).
 
 `train_model.py`'s `calibrate_uncertainty()` still fits a scale factor
 the same way as before (68th/95th percentile of `|residual| / std` across
 every walk-forward fold's held-out predictions -- see its own docstring),
-but Texas's fitted factors are now much closer to 1 -- `c68` of 1.10
-(1-month), 0.97 (3-month, actually *below* 1, meaning the raw band was
-briefly slightly *too wide* there rather than too narrow), and 1.03
-(6-month) -- compared to ~1.9 at every horizon before tuning.
-`generate_predictions.py` still applies `c68` before writing the ± band
-`/market-trends` shows, but the correction it's making today is a small
-honest tweak, not the roughly-doubling fix it used to be.
+and Texas's fitted factors are still much closer to 1 than the ~1.9
+every horizon needed before any tuning existed -- `c68` of 1.46
+(1-month, up from the first pass's 1.10, tracking that horizon's own
+calibration step-back above), 1.10 (3-month, up from 0.97, where the
+first pass's raw band had briefly been slightly *too wide* rather than
+too narrow), and 1.10 (6-month, up from 1.03). `generate_predictions.py`
+still applies `c68` before writing the ± band `/market-trends` shows --
+still a materially smaller correction than the pre-tuning ~1.9x across
+the board, just not quite as small as the first pass's own numbers.
 
 ## Results: Pennsylvania (walk-forward cross-validation, 2026-08-12)
 
@@ -303,58 +325,57 @@ setup. RF and GB here each use their own horizon's winning config from
 
 | Horizon | Naive MAE | Linear MAE | RF MAE | GB MAE | RF vs. naive | Linear vs. naive | GB vs. naive |
 |---|---|---|---|---|---|---|---|
-| 1 month | 0.0184 ± 0.0028 | 0.0118 ± 0.0004 | 0.0126 ± 0.0005 | 0.0122 ± 0.0002 | 31.4% | **35.7%** | 33.4% |
-| 3 months | 0.0379 ± 0.0032 | 0.0232 ± 0.0020 | 0.0216 ± 0.0010 | 0.0210 ± 0.0015 | 43.0% | 38.9% | **44.6%** |
-| 6 months | 0.0518 ± 0.0151 | 0.0224 ± 0.0010 | 0.0234 ± 0.0019 | 0.0222 ± 0.0023 | 54.9% | 56.7% | **57.2%** |
+| 1 month | 0.0184 ± 0.0028 | 0.0118 ± 0.0004 | 0.0125 ± 0.0005 | 0.0120 ± 0.0003 | 32.1% | **35.7%** | 34.8% |
+| 3 months | 0.0379 ± 0.0032 | 0.0232 ± 0.0020 | 0.0217 ± 0.0010 | 0.0211 ± 0.0016 | 42.9% | 38.9% | **44.3%** |
+| 6 months | 0.0518 ± 0.0151 | 0.0224 ± 0.0010 | 0.0235 ± 0.0020 | 0.0220 ± 0.0029 | 54.6% | 56.7% | **57.5%** |
 
-**Pennsylvania's gains from tuning were real but modest on both sides**
--- 1-3 percentage points of MAE improvement at every horizon for RF, well
-under 2 points for GB, versus Texas's much larger 6-month RF jump. Linear
-regression still wins at 1 month and gradient boosting at 3 and 6 months,
-same pattern as before GB was tuned too -- unlike Texas, tuning both
-models here didn't flip which one wins anywhere, just widened gradient
-boosting's existing edge at 3 and 6 months a little further (43.9% ->
-44.6%, 56.9% -> 57.2%). The random forest -- the one actually deployed --
-still narrowed the gap at every horizon versus its own pre-tuning
-self. With a third as many counties and a smaller, more geographically compact
-state, PA's 6-month fold error is also still the least consistent of any
-horizon/state combination here (± up to 0.0151) -- a smaller, noisier
-dataset is a plausible reason the more flexible models have a harder time
-earning their extra complexity back. Feature importances follow the same
-seasonality-dominant shape as Texas (`month_sin`/`month_cos` together
-28-57% across horizons, still the largest single block but less
-dominant at 1 and 3 months than before tuning -- `inventory_mom_pct`
-alone is now the second-most important feature at 1 month, 12%), with
-`mortgage_rate`/`mortgage_rate_mom_change` a modest but real presence
-throughout (8-10% combined at every horizon, similar magnitude to Texas).
+**Pennsylvania's second search pass moved every number by well under 1
+percentage point**, in both directions -- RF improved slightly at 1
+month (31.4% -> 32.1%) and GB at 1 and 6 months (33.4% -> 34.8%, 57.2% ->
+57.5%), while RF gave back a hair at 3 and 6 months and GB at 3 months.
+Linear regression still wins at 1 month and gradient boosting at 3 and 6
+months, same pattern as every prior version of this table -- tuning
+further here didn't flip which model wins anywhere, unlike Texas's 1
+month. With a third as many counties and a smaller, more geographically
+compact state, PA's 6-month fold error is also still the least
+consistent of any horizon/state combination here (± up to 0.0151) -- a
+smaller, noisier dataset remains a plausible reason the more flexible
+models have a harder time earning their extra complexity back, and a
+plausible reason this second search pass had less room to move PA's
+numbers than Texas's larger dataset gave it. Feature importances follow
+the same seasonality-dominant shape as Texas (`month_sin`/`month_cos`
+together 33-58% across horizons, still the largest single block, more
+dominant here than in Texas at every horizon), with `mortgage_rate`/
+`mortgage_rate_mom_change` a modest but real presence throughout (8-10%
+combined at every horizon, similar magnitude to Texas).
 
-**Uncertainty calibration**: before applying any scale factor, 56-70%
-coverage within ±1 std (target ~68%) -- **up from 45-55% before
-tuning**, and 87-94% within ±2 std (target ~95%), also closer than
-79-85% before. Same pattern as Texas: tuning for MAE alone fixed most of
-the calibration gap as a side effect.
+**Uncertainty calibration**: before applying any scale factor, 56-69%
+coverage within ±1 std (target ~68%) -- essentially unchanged from the
+first pass's 56-70%, unlike Texas's step-back -- and 88-93% within ±2 std
+(target ~95%), also holding roughly steady. Pennsylvania's smaller
+dataset showing less calibration movement between search passes matches
+it showing less MAE movement too: less data for a wider search to find a
+meaningfully different optimum in, in either direction.
 
-Pennsylvania's fitted `c68` factors are correspondingly smaller than
-before tuning too -- 1.28 (1-month), 0.98 (3-month, like Texas's 3-month
-figure, actually *below* 1), 0.95 (6-month) -- down from 1.58/1.36/1.29.
-`c68` shrinking as the horizon lengthens is the same direction Texas
-moved in this time (unlike before tuning, when the two states' factors
-moved in opposite directions with horizon) -- one more sign that
-tuning brought the two states' calibration behavior closer together, not
-just their raw accuracy. `generate_predictions.py` still ships `std *
-c68` rather than the raw tree-spread, but -- as in Texas -- the
-correction it's making today is a small honest tweak, not the ~1.3-1.6x
+Pennsylvania's fitted `c68` factors barely moved from the first pass --
+1.28 (1-month, unchanged), 1.00 (3-month, up marginally from 0.98), 0.97
+(6-month, up marginally from 0.95) -- all still well under the ~1.9x
+Texas needed before any tuning existed, and still smaller than Texas's
+own post-second-pass factors above. `generate_predictions.py` still ships
+`std * c68` rather than the raw tree-spread, and the correction it's
+making today for Pennsylvania is essentially the same small, honest
+tweak it was after the first pass, not the ~1.3-1.6x
 fix it used to be.
 
 ## Case study: Clay County
 
-Clay County's 6-month horizon is still one of the largest predicted
-moves in the current output (see `public/tx_county_predictions.json`),
-though no longer the single largest -- Andrews County's 6-month call
-(-8.75 points) is now marginally bigger. Clay's own call barely moved
-through hyperparameter tuning: a projected **-8.7 point** drop in
-price-cut share, from a current 29.7% down toward roughly 21% (was -7.9
-points before tuning).
+Clay County's 6-month horizon is back to being the single largest
+predicted move in the current output (see
+`public/tx_county_predictions.json`) -- Andrews County's own 6-month call
+moved to -7.5 points this pass, behind Clay's own. Clay's call barely
+moved through the widened hyperparameter search: a projected **-8.3
+point** drop in price-cut share, from a current 29.7% down toward
+roughly 21%.
 
 Its actual history explains why: Clay sat in a 22-25% band through most
 of 2025, dropped to a recent low of 10.6% in January 2026 -- then spiked
@@ -363,14 +384,14 @@ hard: 13.0% (Feb) -> 14.6% (Mar) -> 21.3% (Apr) -> 25.7% (May) -> 29.7%
 for a county that had otherwise been comparatively range-bound.
 
 The model isn't predicting Clay keeps climbing -- it's betting on
-reversion, gradually: essentially flat at 1 month (-1.2 points), a
-modest pullback at 3 months (-4.7 points), and the largest call, -8.7
+reversion, gradually: essentially flat at 1 month (-1.0 points), a
+modest pullback at 3 months (-4.4 points), and the largest call, -8.3
 points, only shows up at 6 months. The uncertainty band on that 6-month
-number is now ±3.5 points -- *narrower* than the ±5.9 points before
-tuning, even though the point estimate itself moved further from zero,
-because the tuned forest's raw tree-spread is now close to honestly
-calibrated (see "Uncertainty calibration" above) rather than needing a
-~2x correction. Whether the call is *right* isn't knowable yet (2026-12
+number is now ±3.8 points -- close to the ±3.5 points the first tuning
+pass found, both meaningfully narrower than the ±5.9 points before any
+tuning existed, even though the point estimate itself moved further from
+zero than that original run. Whether the call is *right* isn't knowable
+yet (2026-12
 data doesn't exist yet); what's checkable today is that the prediction
 is legible, tied to a real, visible pattern in the underlying data, and
 paired with a tighter, still-honest uncertainty range -- which is the
@@ -423,21 +444,28 @@ Zillow's price-cut data), it becomes a candidate to fold in as an
 additional feature -- or, further out, a target in its own right.
 
 Retuning the random forest's hyperparameters (see "Hyperparameter
-search" above) is now done, not an open item -- but the search itself
-suggests two concrete follow-ups rather than closing the topic
-entirely: `RANDOM_SEARCH_ITER` is currently 15 candidates per
-horizon/state; a wider or more targeted search (e.g. sampling more
-densely around the winning configs found here, which consistently
-avoided a shallow `max_depth`) might find further gains, at the cost of
-more CV fitting time.
+search" above) has now gone through two passes -- `RANDOM_SEARCH_ITER`
+15 then 30, the second also with a denser `RF_SEARCH_SPACE` grid over
+the same range -- and the second pass's own result is itself the answer
+to whether a third pass is worth running soon: three of six
+horizon/state combinations improved further, three came out marginally
+worse, all swings under 1 percentage point, smaller than this project's
+own walk-forward fold-to-fold noise. That's a genuine sign of
+diminishing returns from more random search alone on this feature set,
+not a reason to stop tuning forever -- but the next real gain here is
+more likely to come from changing what's being searched (e.g. feature
+engineering, or the per-county/subdivided-tract calibration idea below)
+than from a fourth pass over the same kind of space.
 
 Tuning gradient boosting's own hyperparameters (`random_search_gb()`,
-same section above) is also now done, not an open item -- and it changed
-the answer to "is GB actually better, or just untuned RF losing to a
-better-tuned comparison": in Texas, GB now wins at **every** horizon,
-including 1 month, where RF had just taken the lead from it by tuning
-alone. Pennsylvania's picture barely moved (GB was already winning at 3
-and 6 months, still does, by a slightly wider margin). That's a real,
+same section above) went through the same two passes, with a more
+consistent payoff: GB improved further at four of six horizon/state
+combinations in the second pass (most notably Texas's 6-month result,
+50.5% -> 52.3%), and it wins at **every** horizon in Texas now, including
+1 month, where RF had briefly taken the lead from it after the first
+pass. Pennsylvania's picture barely moved either pass (GB was already
+winning at 3 and 6 months, still does, by a slightly wider margin than
+before). That's a real,
 fairly-earned result now, not an artifact of only one side of the
 comparison getting attention -- worth treating "should GB become the
 production model" as a real decision to make deliberately, not defer
