@@ -63,23 +63,35 @@ def latest_row_per_county(dataset: pd.DataFrame) -> pd.DataFrame:
     return usable.loc[latest_idx].reset_index(drop=True)
 
 
-def predict_with_uncertainty(model, X: pd.DataFrame) -> tuple[np.ndarray, np.ndarray]:
-    """Mean prediction (what model.predict() already gives) plus the
-    standard deviation across the forest's individual trees -- a real,
-    (almost) free uncertainty estimate a single-model forecast doesn't
-    have on its own. Trees that broadly agree imply a more reliable
-    prediction than trees that are all over the place for that row.
-    Whether this spread is actually trustworthy (i.e. calibrated, not just
-    a number that looks sciencey) is checked in train_model.py's own copy
-    of this function -- see its evaluate_fold() coverage calculation and
-    model/README.md's "Uncertainty calibration" results."""
-    # .values, not the DataFrame itself -- each tree was fit as part of the
-    # ensemble without its own column-name tracking, and predicting from a
-    # named DataFrame directly against it is a harmless but noisy mismatch
-    # sklearn warns about on every single tree otherwise.
-    X_values = X.values
-    tree_predictions = np.array([tree.predict(X_values) for tree in model.estimators_])
-    return tree_predictions.mean(axis=0), tree_predictions.std(axis=0)
+def predict_with_interval(
+    models: dict, X: pd.DataFrame, delta68: float, delta95: float,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """(mean, std68, std95) from the bundled {"mean", "lower68", "upper68",
+    "lower95", "upper95"} quantile models train_model.py's
+    fit_gb_production_model() saves -- see that function and
+    calibrate_gb_quantiles() for where this comes from. delta68/delta95
+    widen the raw quantile predictions the same way train_model.py's own
+    coverage check found necessary (Conformalized Quantile Regression,
+    not a new model -- see calibrate_gb_quantiles()'s docstring).
+
+    The calibrated interval [lower68, upper68] isn't guaranteed centered
+    on the mean prediction -- quantile regression has no reason to be
+    symmetric -- but /market-trends draws one symmetric ± band per
+    horizon (see web.py's buildTrendSvg), not two separate edges. std68
+    here is the *larger* of the two distances from mean to each edge, so
+    the symmetric band drawn from it always fully contains the real,
+    possibly-asymmetric calibrated interval rather than clipping
+    whichever side happens to be farther from the mean -- conservative
+    (occasionally wider than the tightest possible band) by design, not
+    an oversight."""
+    mean = models["mean"].predict(X)
+    lower68 = models["lower68"].predict(X) - delta68
+    upper68 = models["upper68"].predict(X) + delta68
+    lower95 = models["lower95"].predict(X) - delta95
+    upper95 = models["upper95"].predict(X) + delta95
+    std68 = np.maximum(mean - lower68, upper68 - mean)
+    std95 = np.maximum(mean - lower95, upper95 - mean)
+    return mean, std68, std95
 
 
 def recent_history_by_county(dataset: pd.DataFrame) -> dict[str, list[list]]:
@@ -105,29 +117,32 @@ def main():
 
     history = recent_history_by_county(dataset)
 
-    # c68/c95 per horizon, fit by train_model.py's calibrate_uncertainty()
-    # on walk-forward CV residuals -- the raw tree-spread std below is
-    # measurably overconfident (see model/README.md's "Uncertainty
-    # calibration" results), so it's scaled here before shipping rather than
-    # sent as-is. See that function's docstring for why a scalar fit on
-    # held-out CV rows is a fair calibration, not a circular one. Both
-    # factors are shipped -- change_{h}m_std (c68, ~68% coverage) is the
-    # range web.py shows by default, change_{h}m_std95 (c95, ~95% coverage)
-    # is the wider "worst case" figure alongside it.
+    # gb.delta68/delta95 per horizon, fit by train_model.py's
+    # calibrate_gb_quantiles() on walk-forward CV residuals -- the raw
+    # quantile-model interval below is measurably overconfident the same
+    # way RF's old tree-spread was (see model/README.md's "Uncertainty
+    # calibration" results), so it's widened here before shipping rather
+    # than sent as-is. See that function's docstring for why a delta fit
+    # on held-out CV rows is a fair calibration, not a circular one.
+    # rf.c68/c95 also live in this same file but are no longer read here --
+    # kept only as train_model.py's own comparison-table reference now
+    # that gradient boosting, not the random forest, is the production
+    # model (see train_model.py's module docstring for that history).
     calibration = json.loads((Path(__file__).parent / f"county_distress_calibration_{state_key}.json").read_text())
 
     predictions = {}
     for horizon in TARGET_HORIZONS:
-        model = joblib.load(Path(__file__).parent / f"county_distress_model_{state_key}_{horizon}m.joblib")
-        means, stds = predict_with_uncertainty(model, latest[FEATURE_COLS])
-        c68 = calibration[str(horizon)]["c68"]
-        c95 = calibration[str(horizon)]["c95"]
-        for county, mean, std in zip(latest["county"], means, stds):
+        models = joblib.load(Path(__file__).parent / f"county_distress_model_{state_key}_{horizon}m.joblib")
+        gb_calibration = calibration[str(horizon)]["gb"]
+        means, stds, stds95 = predict_with_interval(
+            models, latest[FEATURE_COLS], gb_calibration["delta68"], gb_calibration["delta95"],
+        )
+        for county, mean, std, std95 in zip(latest["county"], means, stds, stds95):
             predictions.setdefault(county, {})[f"change_{horizon}m"] = round(float(mean), 4)
             # Calibrated to ~68%/~95% historical coverage, not the raw
-            # per-tree spread -- see the calibration comment above.
-            predictions[county][f"change_{horizon}m_std"] = round(float(std) * c68, 4)
-            predictions[county][f"change_{horizon}m_std95"] = round(float(std) * c95, 4)
+            # quantile-model interval -- see the calibration comment above.
+            predictions[county][f"change_{horizon}m_std"] = round(float(std), 4)
+            predictions[county][f"change_{horizon}m_std95"] = round(float(std95), 4)
 
     output = []
     for _, row in latest.iterrows():

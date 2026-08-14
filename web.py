@@ -1250,7 +1250,7 @@ def deals_page():
 def render_market_trends_page(state: dict) -> str:
     body = f"""
       <h1>Market Trends: {state['name']} <span class="manual-badge" title="A research model, not a feature of the property listings above -- see the notes below before reading anything into it">Experimental</span></h1>
-      <p class="subtitle">A random forest model trained on Zillow Research and FRED historical data -- not GovLandScout's own listings -- predicting how each {state['name']} county's share of price-cut listings is likely to move over the next 1, 3, or 6 months. Darker red means the model expects <i>more</i> price cuts (rising distress); darker green means <i>fewer</i> (easing). Counties with no shading don't have enough Zillow history to include yet.</p>
+      <p class="subtitle">A gradient boosting model trained on Zillow Research and FRED historical data -- not GovLandScout's own listings -- predicting how each {state['name']} county's share of price-cut listings is likely to move over the next 1, 3, or 6 months. Darker red means the model expects <i>more</i> price cuts (rising distress); darker green means <i>fewer</i> (easing). Counties with no shading don't have enough Zillow history to include yet.</p>
 
       <div class="card" style="padding: 1.5rem 1.75rem; margin-bottom: 1.5rem;">
         <div class="control" style="max-width: 20rem;">
@@ -1346,20 +1346,23 @@ def render_market_trends_page(state: dict) -> str:
           return `rgb(${{rgb.join(',')}})`;
         }}
 
-        // A random forest's per-tree spread is a real uncertainty estimate
-        // (see generate_predictions.py's predict_with_uncertainty), not
-        // decoration -- counties where the trees broadly disagree get faded
-        // out rather than shown with the same confident-looking fill as
-        // ones the model is actually consistent about.
+        // A real, calibrated uncertainty estimate (see
+        // generate_predictions.py's predict_with_interval -- a calibrated
+        // gradient-boosting quantile interval, not a raw model artifact),
+        // not decoration -- counties with a wider interval get faded out
+        // rather than shown with the same confident-looking fill as ones
+        // the model is actually consistent about.
         function confidenceOpacity(std, maxStd) {{
           if (std == null || !maxStd) return 0.75;
           const uncertainty = Math.max(0, Math.min(1, std / maxStd));
           return 0.75 - 0.45 * uncertainty;  // ranges 0.30 (least confident) to 0.75 (most)
         }}
 
-        function buildTrendSvg(history, projectedValue, std95) {{
+        function buildTrendSvg(history, projectedValue, std, std95) {{
           const width = 560, height = 150, pad = 28;
-          const band = std95 != null ? [projectedValue - std95, projectedValue + std95] : [];
+          const band = [];
+          if (std != null) band.push(projectedValue - std, projectedValue + std);
+          if (std95 != null) band.push(projectedValue - std95, projectedValue + std95);
           const allValues = history.map(h => h[1]).concat([projectedValue], band);
           const minV = Math.min(...allValues), maxV = Math.max(...allValues);
           const range = (maxV - minV) || 0.01;
@@ -1372,18 +1375,24 @@ def render_market_trends_page(state: dict) -> str:
           const lastX = xAt(n - 1), lastY = yAt(history[n - 1][1]);
           const projX = xAt(n), projY = yAt(projectedValue);
 
-          // Drawn before the solid/dashed lines below so they render on top of it,
-          // not the other way around -- the actual/projected trend is the primary
-          // read, the confidence whisker is supporting context alongside it.
-          const bandSvg = std95 != null ? (() => {{
-            const topY = yAt(projectedValue + std95), botY = yAt(projectedValue - std95);
+          // A vertical whisker with end caps at ±capWidth, in `color` --
+          // 95% (blue) drawn wider and first, 68% (green) narrower and on
+          // top of it, so both stay visible where they overlap rather than
+          // the narrower one disappearing under the wider one. Drawn before
+          // the solid/dashed trend lines below so those render on top of
+          // both -- the actual/projected trend is the primary read, the
+          // whiskers are supporting context alongside it.
+          const whisker = (value, color, capWidth) => {{
+            if (value == null) return '';
+            const topY = yAt(projectedValue + value), botY = yAt(projectedValue - value);
             return `<line x1="${{projX}}" y1="${{topY}}" x2="${{projX}}" y2="${{botY}}"
-                          stroke="#2563eb" stroke-width="2" opacity="0.6" />
-                    <line x1="${{projX - 5}}" y1="${{topY}}" x2="${{projX + 5}}" y2="${{topY}}"
-                          stroke="#2563eb" stroke-width="2" opacity="0.6" />
-                    <line x1="${{projX - 5}}" y1="${{botY}}" x2="${{projX + 5}}" y2="${{botY}}"
-                          stroke="#2563eb" stroke-width="2" opacity="0.6" />`;
-          }})() : '';
+                          stroke="${{color}}" stroke-width="2" opacity="0.7" />
+                    <line x1="${{projX - capWidth}}" y1="${{topY}}" x2="${{projX + capWidth}}" y2="${{topY}}"
+                          stroke="${{color}}" stroke-width="2" opacity="0.7" />
+                    <line x1="${{projX - capWidth}}" y1="${{botY}}" x2="${{projX + capWidth}}" y2="${{botY}}"
+                          stroke="${{color}}" stroke-width="2" opacity="0.7" />`;
+          }};
+          const bandSvg = whisker(std95, '#2563eb', 5) + whisker(std, '#16a34a', 3);
 
           return `<svg viewBox="0 0 ${{width}} ${{height}}" style="width:100%;height:${{height}}px;">
             ${{bandSvg}}
@@ -1422,11 +1431,12 @@ def render_market_trends_page(state: dict) -> str:
               ${{std != null ? `(&plusmn;${{(std * 100).toFixed(1)}} points, a calibrated ~68% confidence range` : ''}}
               ${{std95 != null ? `; up to &plusmn;${{(std95 * 100).toFixed(1)}} points at ~95% confidence)` : (std != null ? ')' : '')}}
             </p>
-            ${{buildTrendSvg(row.history, projectedValue, std95)}}
+            ${{buildTrendSvg(row.history, projectedValue, std, std95)}}
             <p style="margin: 0.5rem 0 0; font-size: 0.8rem; color: #64748b;">
               Solid line: actual monthly price-cut share, last ${{row.history.length}} months.
               Dashed line: the model's projected value ${{horizonLabel.toLowerCase()}}, not another observed month.
-              ${{std95 != null ? `Blue bar: the ~95% confidence range around that projection.` : ''}}
+              ${{std != null ? `Green bar: the ~68% confidence range around that projection.` : ''}}
+              ${{std95 != null ? ` Blue bar: the ~95% range.` : ''}}
             </p>
           `;
         }}
@@ -1476,7 +1486,7 @@ def render_market_trends_page(state: dict) -> str:
           document.getElementById('trendsLegend').innerHTML =
             `<b>${{horizonLabel}}</b> -- darker red: more price cuts expected (rising distress) &middot; `
             + `darker green: fewer expected (easing) &middot; gray: no model data for that county. `
-            + `Faded fill: the model's individual trees disagree more for that county, i.e. lower confidence. `
+            + `Faded fill: a wider calibrated confidence interval for that county, i.e. lower confidence. `
             + `Scale is relative to this horizon's own range (&plusmn;${{(maxAbs * 100).toFixed(1)}} points at the extremes).`;
 
           // Keep the detail panel in sync if a county's already selected

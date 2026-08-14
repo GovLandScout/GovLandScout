@@ -1,6 +1,6 @@
 # GovLandScout - County Distress Trend Model (Phase 1)
 
-A random forest baseline predicting next-month change in county housing
+A gradient boosting model predicting next-month change in county housing
 distress, using Zillow Research + FRED historical data rather than
 GovLandScout's own scraped listings -- our own history is only a few
 weeks old, nowhere near enough to train on yet. This is deliberately
@@ -8,6 +8,16 @@ kept separate from the scraper/web app: different dependencies (pandas,
 scikit-learn), different deploy target (none -- this doesn't run on
 Render or in the daily scrape workflow), different audience (research,
 not the live site).
+
+Was a random forest through most of this project's history; switched to
+gradient boosting once two separate hyperparameter-tuning passes on both
+models (see "Hyperparameter search" below) showed GB fairly beating RF at
+every Texas horizon and most Pennsylvania ones -- a real, earned result,
+not an artifact of only one side getting attention. See git history for
+the RF-era version of this README if you need it; this version documents
+the current GB architecture, including the uncertainty-quantification
+redesign that switch required (see "Uncertainty, not just a point
+estimate" below).
 
 Runs per state (see `states.py`) -- Texas and Pennsylvania currently,
 each with its own trained models, GeoJSON, and predictions file, served
@@ -42,35 +52,46 @@ pipeline for it (see "Running it" below), not new code.
   search" and each state's Results below), though it genuinely hurt
   Texas's 6-month model before that tuning existed -- see "Next steps"
   for that history and why it's no longer an open production concern.
-- **Model**: scikit-learn RandomForestRegressor (the production model
-  `generate_predictions.py` actually serves), evaluated in
+- **Model**: scikit-learn `HistGradientBoostingRegressor` (the production
+  model `generate_predictions.py` actually serves), evaluated in
   `train_model.py` against a naive "predict zero change" baseline, a
-  LinearRegression benchmark, and a HistGradientBoostingRegressor, on
-  walk-forward time-based cross-validation (several rolling folds, not
-  one fixed split -- see Results below for why that matters). Gradient
-  boosting is a comparison point only, not a production candidate as-is
-  -- see Results for why swapping it in isn't just a config change. The
-  forest's own hyperparameters (tree count, depth, leaf/split sizes,
-  features considered per split) are no longer one hand-picked config
-  reused everywhere -- `random_search_rf()` searches per horizon per
-  state, scored on the same walk-forward folds, before every other
-  number in this README is computed. See "Hyperparameter search" below.
-- **Uncertainty, not just a point estimate**: each production model
-  also reports the spread across its individual trees' predictions for
-  a given county, surfaced on `/market-trends` as reduced opacity for
-  low-confidence counties and a plain-language `±` range in the
-  tooltip/detail panel -- see generate_predictions.py's
-  `predict_with_uncertainty()`. **Checked, not just asserted**:
-  train_model.py's own copy of that function feeds a calibration check
-  in its CV loop (does the true outcome actually fall inside the
-  predicted band as often as the band claims?) -- see Results below.
-  The raw tree-spread turned out to be measurably overconfident, so it's
-  no longer shipped as-is: `train_model.py`'s `calibrate_uncertainty()`
-  fits a scale factor per horizon on those same walk-forward-CV
-  residuals (a held-out set, not the production model's own training
-  data) and saves it to `county_distress_calibration_{state}.json`;
-  `generate_predictions.py` applies it before writing the `±` band. See
-  "Uncertainty calibration" below for the before/after numbers.
+  LinearRegression benchmark, and a RandomForestRegressor (kept as a
+  comparison point in the CV table now, not production -- see git
+  history for when the roles were reversed), on walk-forward time-based
+  cross-validation (several rolling folds, not one fixed split -- see
+  Results below for why that matters). Neither model's own
+  hyperparameters (tree count, depth, leaf/split sizes, learning rate,
+  features considered per split) are one hand-picked config reused
+  everywhere -- `random_search_rf()` and `random_search_gb()` each
+  search per horizon per state, scored on the same walk-forward folds,
+  before every other number in this README is computed. See
+  "Hyperparameter search" below.
+- **Uncertainty, not just a point estimate**: alongside the mean-loss
+  production model, `train_model.py`'s `fit_gb_production_model()` fits
+  four more gradient boosting models per horizon at fixed quantiles
+  (`GB_QUANTILES`: 0.16/0.84 for a 68% interval, 0.025/0.975 for 95%) --
+  real quantile regression, not a proxy for one. HistGradientBoostingRegressor's
+  sequential trees can't produce RandomForestRegressor's old tree-spread
+  estimate (there's no ensemble of independent trees to disagree with
+  each other), so this is a genuinely different technique, not a
+  drop-in replacement -- see generate_predictions.py's
+  `predict_with_interval()`. Surfaced on `/market-trends` as reduced
+  opacity for low-confidence counties and a plain-language `±` range in
+  the tooltip/detail panel, plus (as of this version) a green/blue
+  whisker pair on the drill-down chart itself. **Checked, not just
+  asserted**: train_model.py's own copy of the quantile fit feeds a
+  coverage check in its CV loop (does the true outcome actually fall
+  inside the predicted interval as often as it claims?) -- see Results
+  below. The raw quantile interval turned out to be measurably
+  overconfident, same as the old tree-spread was, so it's not shipped
+  as-is: `train_model.py`'s `calibrate_gb_quantiles()` widens both
+  interval edges by a delta fit on those same walk-forward-CV residuals
+  (a held-out set, not the production model's own training data) using
+  Conformalized Quantile Regression (Romano, Patterson & Candès 2019 --
+  a principled, published technique, not this project's own invention),
+  and saves the deltas to `county_distress_calibration_{state}.json`;
+  `generate_predictions.py` applies them before writing the `±` band.
+  See "Uncertainty calibration" below for the before/after numbers.
 - **Not in scope yet**: per-property predictions, states beyond TX/PA,
   GovLandScout's own scraped history as a feature (revisit once it has
   enough months behind it to matter).
@@ -103,24 +124,28 @@ Each script takes a state key from `states.py` as its only CLI arg
    panel for that state, engineers the lagged/rolling features described
    above, and writes `data/{state}_county_month_dataset.csv`.
 3. `train_model.py <state>` -- for each horizon, first a random search
-   over the random forest's own hyperparameters (see "Hyperparameter
-   search" below), then walk-forward cross-validation with the winning
-   config (random forest vs. linear regression vs. gradient boosting vs.
-   a naive baseline, plus a check on whether the random forest's own
-   uncertainty estimate is actually calibrated), then fits one final
-   production random forest per horizon on all available data using that
-   same winning config. Saves each as
+   over both the random forest's and the gradient boosting's own
+   hyperparameters (see "Hyperparameter search" below), then walk-forward
+   cross-validation with each model's winning config (gradient boosting
+   vs. random forest vs. linear regression vs. a naive baseline, plus a
+   check on whether GB's quantile-regression uncertainty interval is
+   actually calibrated), then fits the final production models on all
+   available data using GB's winning config: one mean-loss model plus
+   four quantile-loss models per horizon (see "Uncertainty, not just a
+   point estimate" above), bundled into one dict and saved as
    `county_distress_model_{state}_{h}m.joblib` (gitignored -- regenerated
-   by re-running this script, not something to commit), plus a
-   `county_distress_calibration_{state}.json` of per-horizon uncertainty
-   scale factors fit on the same CV residuals (also gitignored, same
-   reasoning as the `.joblib` files -- both regenerate together and
-   `generate_predictions.py` needs them run in the same pass).
+   by re-running this script, not something to commit). Also saves
+   `county_distress_calibration_{state}.json`, a per-horizon `{"rf":
+   {...}, "gb": {...}}` of calibration values fit on the same CV
+   residuals (also gitignored, same reasoning as the `.joblib` files --
+   both regenerate together and `generate_predictions.py` needs them run
+   in the same pass); only the `"gb"` half (`delta68`/`delta95`) is
+   actually used in production, `"rf"` is kept for the comparison table's
+   own reference.
 4. `generate_predictions.py <state>` -- runs that state's three trained
-   models against each county's latest available row, scales each
-   prediction's uncertainty by that horizon's calibration factor, and
-   writes
-   `public/{state}_county_predictions.json`.
+   horizon bundles against each county's latest available row, widens
+   each prediction's quantile interval by that horizon's calibration
+   deltas, and writes `public/{state}_county_predictions.json`.
 
 ## Publishing current predictions
 
@@ -165,7 +190,10 @@ walk-forward folds used everywhere else in this file -- not sklearn's own
 months into the same fold as its earlier ones, the exact future-leak
 walk-forward CV exists to avoid (see train_model.py's module docstring).
 The winning config feeds every RF fit downstream: the comparison table
-below, the coverage check, and the production model itself.
+below and its own coverage check. RF is no longer the production model
+(see git history for when it was) -- kept as the CV comparison's second
+tree-based reference point alongside GB, still tuned just as seriously
+as GB is, so the comparison stays honest.
 
 This turned out to matter well beyond the Texas 6-month weakness that
 originally motivated it (see git history for the first version of this
@@ -206,10 +234,15 @@ single model) -- a real sign this particular search has roughly found
 its ceiling for this feature set, not that a fourth pass would keep
 finding more.
 
-`random_search_gb()` does the same thing for the gradient boosting
-comparison point (see module docstring), over its own search space
-(`max_iter`/`learning_rate`/`max_depth`/`max_leaf_nodes`/
-`min_samples_leaf`/`l2_regularization`), also widened this same pass:
+`random_search_gb()` does the same thing for gradient boosting, over its
+own search space (`max_iter`/`learning_rate`/`max_depth`/
+`max_leaf_nodes`/`min_samples_leaf`/`l2_regularization`), also widened
+this same pass. Unlike RF's winning config, GB's now feeds more than a
+comparison table: it's what `fit_gb_production_model()` actually deploys
+(the mean-loss model), and what every one of the four quantile models
+alongside it reuses too (see "Uncertainty, not just a point estimate"
+above for why sharing one config across five models is a deliberate
+simplification, not an oversight):
 
 | State | Horizon | Winning config | MAE vs. default | vs. first pass's winner |
 |---|---|---|---|---|
@@ -255,65 +288,66 @@ second pass -- see "Hyperparameter search" above for why RF moved
 slightly *backward* at 1 and 6 months here despite a more thorough
 search, and why that's expected random-search behavior, not a bug.)
 
-**Gradient boosting wins outright at every horizon in Texas, now by a
-clearer margin than the first tuning pass found** -- 1 month held (GB
-22.1% vs. RF's 20.5%, RF having given back the narrow lead it briefly
-held), and 6 months widened noticeably (GB's second-pass tuning reached
-52.3%, while RF's own second pass landed at 46.8%, slightly behind its
-own first-pass result). That's still a real, fairly-earned result, not
-an artifact of only one side of the comparison getting attention -- both
-models went through the same two-pass search. GB remains a comparison
-point, not a production candidate, for the reason given in Scope above
-(its sequential trees can't produce the same tree-spread uncertainty
-estimate) -- see "Next steps" for what adopting it would actually require.
+**Gradient boosting wins outright at every horizon in Texas, and is now
+what `/market-trends` actually serves, not a comparison point held out
+of production for architectural reasons** -- 1 month held (GB 22.1% vs.
+RF's 20.5%, RF having given back the narrow lead it briefly held), and 6
+months widened noticeably (GB's second-pass tuning reached 52.3%, while
+RF's own second pass landed at 46.8%, slightly behind its own first-pass
+result). That's a real, fairly-earned result, not an artifact of only
+one side of the comparison getting attention -- both models went through
+the same two-pass search. Adopting GB required solving the uncertainty
+problem that had kept RF in production despite losing this comparison --
+see below for how, and "Next steps" for what's still approximate about
+that solution.
 
-Feature importances (production models, fit on all available data):
+Feature importances (permutation MAE-increase on the production mean
+model -- not comparable percentage-for-percentage to the RF-era table
+this replaced, see Scope's "Uncertainty" bullet and
+`fit_gb_production_model()`'s own docstring for why):
 
-- **`month_sin`/`month_cos` together are back in the 28-34% range across
-  horizons** (1 month: 28%, 3 months: 34%, 6 months: 32%) -- similar
-  order of magnitude to the first tuning pass, not the 50%+ of the
-  original untuned forest, but this pass's specific configs (shallower
-  `max_depth` at 1 month, wider `max_features` at 3 and 6) redistribute
-  the remaining weight differently fold to fold. `mortgage_rate` alone is
-  now the *third*-most important single feature at 1 month (8.6%), ahead
-  of every ZHVI/unemployment feature.
-- **`mortgage_rate`/`mortgage_rate_mom_change` remain a real presence at
-  every horizon** -- 14.3% combined at 1 month, 11.1% at 3 months, 15.4%
-  at 6 months (`mortgage_rate_mom_change` alone is still the *third*-most
-  important feature there, same as every prior version of this table).
-- `price_cut_pct` itself (current level) still shows a mean-reversion
-  pattern across horizons -- see the Clay County case study below for a
-  concrete example.
-- Unemployment features stay modest across horizons, similar to before.
+- **`price_cut_pct` (current level, or its `_roll3` rolling-average
+  variant) dominates every horizon here, a real shift from RF's
+  seasonality-first story.** At 1 month, `price_cut_pct_roll3` alone
+  (0.0068 MAE-increase) is more than 3x the next feature; at 3 and 6
+  months it's the bare `price_cut_pct` level instead (0.0165, 0.0257 --
+  each roughly the size of the *entire model's* MAE at that horizon,
+  meaning shuffling this one feature alone destroys most of what the
+  model knows). `month_sin`/`month_cos` are still present and real
+  (ranked 2nd-3rd at every horizon) but clearly secondary to GB, unlike
+  RF where they were consistently the single largest block.
+- **`mortgage_rate` is a real, consistent presence** -- 4th-6th ranked at
+  every horizon (0.0008-0.0053), joined by `mortgage_rate_mom_change` more
+  prominently at 6 months (0.0033, 7th) than at 1 or 3.
+- `price_cut_pct`'s dominance here is itself a mean-reversion signal --
+  see the Clay County case study below for what a sharp recent spike in
+  this exact feature does to GB's own prediction, a much bigger call
+  than RF ever made for the same county.
+- Unemployment features stay the least important block at every horizon,
+  same conclusion as the RF-era table even though the underlying numbers
+  aren't comparable.
 
-**Uncertainty calibration**: before applying any scale factor, 52-64% of
-actual outcomes now fall within the random forest's raw predicted ±1 std
-band across the three horizons (target for a well-calibrated
-Gaussian-shaped spread: ~68%) -- still well up from 36-42% before any
-tuning, but a real step back from the first tuning pass's 64-70%,
-mirroring that pass's own slightly-worse MAE at 1 and 6 months above (the
-same specific configs driving both). 80-93% land within ±2 std (target:
-~95%), also down from 91-95% before. Read together with the MAE table
-above: this is the honest cost of the second search pass happening to
-land on configs that fit the walk-forward folds' *point estimates*
-marginally better at the expense of the *spread* being slightly less
-well-behaved for two of the three horizons -- not a sign the search is
-broken, just a reminder that MAE and calibration aren't the same target,
-and this search only ever optimized the former (see "Hyperparameter
-search" above).
+**Uncertainty calibration**: before applying any calibration, 56-66% of
+actual outcomes fall within the raw `[lower68, upper68]` quantile
+interval across the three horizons (target for a well-calibrated 68%
+interval: ~68%) -- overconfident, the same direction RF's raw tree-spread
+was (though RF's later, tuned version got closer to its own target than
+GB's raw interval does here). 89-93% land within the raw
+`[lower95, upper95]` interval (target: ~95%), closer but still short.
 
-`train_model.py`'s `calibrate_uncertainty()` still fits a scale factor
-the same way as before (68th/95th percentile of `|residual| / std` across
-every walk-forward fold's held-out predictions -- see its own docstring),
-and Texas's fitted factors are still much closer to 1 than the ~1.9
-every horizon needed before any tuning existed -- `c68` of 1.46
-(1-month, up from the first pass's 1.10, tracking that horizon's own
-calibration step-back above), 1.10 (3-month, up from 0.97, where the
-first pass's raw band had briefly been slightly *too wide* rather than
-too narrow), and 1.10 (6-month, up from 1.03). `generate_predictions.py`
-still applies `c68` before writing the ± band `/market-trends` shows --
-still a materially smaller correction than the pre-tuning ~1.9x across
-the board, just not quite as small as the first pass's own numbers.
+`train_model.py`'s `calibrate_gb_quantiles()` widens both edges of the
+interval by a delta fit on these same held-out walk-forward-CV residuals
+(Conformalized Quantile Regression -- see that function's own docstring),
+which by construction brings coverage on this data to exactly the target
+rate. Texas's fitted deltas: `delta68` of 0.0006 (1-month), 0.0051
+(3-month), 0.0055 (6-month) -- all small relative to the point estimates
+themselves, and `delta95` of 0.0024, 0.0102, 0.0115 respectively (roughly
+2-4x `delta68`, similar to RF's old `c95`/`c68` ratio staying near 2).
+`generate_predictions.py` applies both before writing the ± band
+`/market-trends` shows -- see `predict_with_interval()`'s own docstring
+for how an asymmetric calibrated interval becomes the single symmetric ±
+number the UI actually draws (a real, documented simplification, not
+hidden away).
 
 ## Results: Pennsylvania (walk-forward cross-validation, 2026-08-12)
 
@@ -329,73 +363,91 @@ setup. RF and GB here each use their own horizon's winning config from
 | 3 months | 0.0379 ± 0.0032 | 0.0232 ± 0.0020 | 0.0217 ± 0.0010 | 0.0211 ± 0.0016 | 42.9% | 38.9% | **44.3%** |
 | 6 months | 0.0518 ± 0.0151 | 0.0224 ± 0.0010 | 0.0235 ± 0.0020 | 0.0220 ± 0.0029 | 54.6% | 56.7% | **57.5%** |
 
-**Pennsylvania's second search pass moved every number by well under 1
-percentage point**, in both directions -- RF improved slightly at 1
-month (31.4% -> 32.1%) and GB at 1 and 6 months (33.4% -> 34.8%, 57.2% ->
-57.5%), while RF gave back a hair at 3 and 6 months and GB at 3 months.
-Linear regression still wins at 1 month and gradient boosting at 3 and 6
-months, same pattern as every prior version of this table -- tuning
-further here didn't flip which model wins anywhere, unlike Texas's 1
-month. With a third as many counties and a smaller, more geographically
-compact state, PA's 6-month fold error is also still the least
-consistent of any horizon/state combination here (± up to 0.0151) -- a
-smaller, noisier dataset remains a plausible reason the more flexible
-models have a harder time earning their extra complexity back, and a
-plausible reason this second search pass had less room to move PA's
-numbers than Texas's larger dataset gave it. Feature importances follow
-the same seasonality-dominant shape as Texas (`month_sin`/`month_cos`
-together 33-58% across horizons, still the largest single block, more
-dominant here than in Texas at every horizon), with `mortgage_rate`/
-`mortgage_rate_mom_change` a modest but real presence throughout (8-10%
-combined at every horizon, similar magnitude to Texas).
+**Gradient boosting doesn't win outright in Pennsylvania -- linear
+regression still wins at 1 month (35.7% vs. GB's 34.8%)** -- but it's the
+production model here too, the same as Texas, for consistency (one
+pipeline, one production model class per horizon across both states, not
+a per-horizon "whichever wins" selection this project has never done for
+any other model). GB does win clearly at 3 and 6 months (44.3%, 57.5%).
+With a third as many counties and a smaller, more geographically compact
+state, PA's 6-month fold error is also still the least consistent of any
+horizon/state combination here (± up to 0.0151) -- a smaller, noisier
+dataset remains a plausible reason the more flexible models have a harder
+time earning their extra complexity back here specifically.
 
-**Uncertainty calibration**: before applying any scale factor, 56-69%
-coverage within ±1 std (target ~68%) -- essentially unchanged from the
-first pass's 56-70%, unlike Texas's step-back -- and 88-93% within ±2 std
-(target ~95%), also holding roughly steady. Pennsylvania's smaller
-dataset showing less calibration movement between search passes matches
-it showing less MAE movement too: less data for a wider search to find a
-meaningfully different optimum in, in either direction.
+Feature importances (permutation MAE-increase on the production mean
+model -- see the Texas section above for why these aren't comparable to
+the old RF-era percentages):
 
-Pennsylvania's fitted `c68` factors barely moved from the first pass --
-1.28 (1-month, unchanged), 1.00 (3-month, up marginally from 0.98), 0.97
-(6-month, up marginally from 0.95) -- all still well under the ~1.9x
-Texas needed before any tuning existed, and still smaller than Texas's
-own post-second-pass factors above. `generate_predictions.py` still ships
-`std * c68` rather than the raw tree-spread, and the correction it's
-making today for Pennsylvania is essentially the same small, honest
-tweak it was after the first pass, not the ~1.3-1.6x
-fix it used to be.
+- **`price_cut_pct`/`price_cut_pct_roll3` dominate here too, same shift
+  from RF's seasonality-first story as Texas.** 1 month: `price_cut_pct_roll3`
+  leads (0.0193, more than 2x the next feature); 3 and 6 months: bare
+  `price_cut_pct` leads (0.0152, 0.0250). `month_cos`/`month_sin` are
+  still real and closely ranked 2nd at every horizon, closer behind the
+  leader here than in Texas.
+- `mortgage_rate` is a consistent, if secondary, presence (3rd-4th ranked
+  at every horizon, 0.0018-0.0074), similar magnitude to Texas.
+
+**Uncertainty calibration**: before applying any calibration, 47-55% of
+actual outcomes fall within the raw `[lower68, upper68]` quantile
+interval (target ~68%) -- more overconfident than Texas's own raw
+interval, and 80-82% within `[lower95, upper95]` (target ~95%), also
+further short. Pennsylvania's smaller, noisier dataset (see the 6-month
+fold-consistency point above) is a plausible reason its raw quantile
+models fit the tails less precisely than Texas's.
+
+`calibrate_gb_quantiles()` widens Pennsylvania's interval more than
+Texas's needed, consistent with the larger raw-coverage gap above --
+`delta68` of 0.0051 (1-month), 0.0062 (3-month), 0.0073 (6-month), and
+`delta95` of 0.0110, 0.0166, 0.0171 (roughly 2-2.5x `delta68`, similar
+ratio to Texas's). `generate_predictions.py` applies these the same way
+as Texas's -- a real, if larger, calibration fix, following the same
+"widen the raw interval by a delta fit on held-out data" logic
+throughout this section.
 
 ## Case study: Clay County
 
-Clay County's 6-month horizon is back to being the single largest
-predicted move in the current output (see
-`public/tx_county_predictions.json`) -- Andrews County's own 6-month call
-moved to -7.5 points this pass, behind Clay's own. Clay's call barely
-moved through the widened hyperparameter search: a projected **-8.3
-point** drop in price-cut share, from a current 29.7% down toward
-roughly 21%.
+Clay County's 6-month horizon is still the single largest predicted move
+in the current output (see `public/tx_county_predictions.json`), and
+**switching to gradient boosting made it a much bigger call than RF ever
+made for this county** -- a projected **-13.4 point** drop in price-cut
+share, from a current 29.7% down toward roughly 16%, versus RF's own
+largest version of this same call, -8.3 points. Andrews County's own
+6-month call grew similarly (-7.5 -> -10.8 points) but stays behind
+Clay's.
 
-Its actual history explains why: Clay sat in a 22-25% band through most
-of 2025, dropped to a recent low of 10.6% in January 2026 -- then spiked
-hard: 13.0% (Feb) -> 14.6% (Mar) -> 21.3% (Apr) -> 25.7% (May) -> 29.7%
-(Jun 2026), nearly tripling in five months. That's a sharp, unusual move
-for a county that had otherwise been comparatively range-bound.
+Its actual history explains why either model calls reversion here: Clay
+sat in a 22-25% band through most of 2025, dropped to a recent low of
+10.6% in January 2026 -- then spiked hard: 13.0% (Feb) -> 14.6% (Mar) ->
+21.3% (Apr) -> 25.7% (May) -> 29.7% (Jun 2026), nearly tripling in five
+months. That's a sharp, unusual move for a county that had otherwise been
+comparatively range-bound -- and, per the Results section above,
+`price_cut_pct`'s current level is GB's single most important feature at
+this horizon, more so than it ever was for RF. A model that leans harder
+on "how extreme is the current level" for exactly the input feature this
+county's own history is currently most extreme on plausibly explains why
+GB's call moved further from zero than RF's, not just a random
+difference between two comparably-accurate models.
 
 The model isn't predicting Clay keeps climbing -- it's betting on
-reversion, gradually: essentially flat at 1 month (-1.0 points), a
-modest pullback at 3 months (-4.4 points), and the largest call, -8.3
-points, only shows up at 6 months. The uncertainty band on that 6-month
-number is now ±3.8 points -- close to the ±3.5 points the first tuning
-pass found, both meaningfully narrower than the ±5.9 points before any
-tuning existed, even though the point estimate itself moved further from
-zero than that original run. Whether the call is *right* isn't knowable
-yet (2026-12
-data doesn't exist yet); what's checkable today is that the prediction
-is legible, tied to a real, visible pattern in the underlying data, and
-paired with a tighter, still-honest uncertainty range -- which is the
-whole point of shipping the drill-down chart on `/market-trends`
+reversion, gradually: a real pullback shows up even at 1 month (-1.1
+points) and 3 months (-9.6 points) now, not just 6 (-13.4 points) --
+GB's calls front-load more of the reversion into earlier horizons than
+RF's did. The uncertainty band on the 6-month number is ±6.6 points
+(68%) / ±15.2 points (95%) -- both meaningfully wider in absolute terms
+than RF's final ±3.8 points, consistent with GB's raw quantile interval
+needing a real conformal widening at this horizon (`delta68`=0.0055,
+see Results above) where RF's tuned tree-spread had gotten close to
+self-calibrated. A bigger point estimate paired with a wider,
+honestly-calibrated band is the right shape for "the model is confident
+*something* unusual is happening here, less confident exactly how much
+of it reverses" -- not a contradiction. Whether the call is *right*
+isn't knowable yet (2026-12 data doesn't exist yet); what's checkable
+today is that the prediction is legible, tied to a real, visible pattern
+in the underlying data, and paired with an honestly-calibrated
+uncertainty range -- which is the whole point of shipping the drill-down
+chart, now with both the 68% (green) and 95% (blue) bands drawn directly
+on it, on `/market-trends`
 alongside the map.
 
 ## Considered but not built: private mortgage foreclosure statistics
@@ -461,39 +513,50 @@ Tuning gradient boosting's own hyperparameters (`random_search_gb()`,
 same section above) went through the same two passes, with a more
 consistent payoff: GB improved further at four of six horizon/state
 combinations in the second pass (most notably Texas's 6-month result,
-50.5% -> 52.3%), and it wins at **every** horizon in Texas now, including
-1 month, where RF had briefly taken the lead from it after the first
-pass. Pennsylvania's picture barely moved either pass (GB was already
-winning at 3 and 6 months, still does, by a slightly wider margin than
-before). That's a real,
-fairly-earned result now, not an artifact of only one side of the
-comparison getting attention -- worth treating "should GB become the
-production model" as a real decision to make deliberately, not defer
-indefinitely. The blocker is still what Scope describes: GB's sequential
-trees can't produce the same tree-spread uncertainty estimate
-`predict_with_uncertainty()` depends on, so switching isn't a config
-change, it's redesigning how `/market-trends` gets its confidence bands
-at all (quantile regression and conformal prediction -- see the
-calibration paragraph below -- are the natural candidates for what would
-replace it).
+50.5% -> 52.3%), and it now wins at **every** Texas horizon and 2 of 3
+Pennsylvania ones -- a real, fairly-earned result, not an artifact of
+only one side of the comparison getting attention. That's no longer an
+open decision to make -- it's why GB is the production model as of this
+version of this README (see git history for the RF-era version). What
+that switch actually required is now real, shipped work rather than a
+future blocker: `fit_gb_production_model()`'s four quantile models plus
+`calibrate_gb_quantiles()`'s conformal widening (see "Uncertainty, not
+just a point estimate" above), not the "quantile regression and
+conformal prediction... are the natural candidates" hand-wave this
+section used to make.
+
+That real implementation has its own real, documented simplifications
+worth revisiting, though, not a finished, closed topic:
+
+- **The four quantile models share the mean model's hyperparameters**
+  (see `make_gb_quantile_model()`'s own docstring) rather than each being
+  independently tuned. A quantile loss surface isn't the same shape as
+  squared-error's, so the mean model's regularization strength is a
+  reasonable starting assumption, not a verified-optimal one for the
+  tails specifically -- an independent `random_search_gb()` pass per
+  quantile (4x the search cost already run twice for the mean model)
+  is the natural next step if the calibration deltas above ever look too
+  large to just be measurement noise.
+- **The calibration deltas are a single number per horizon per state**,
+  same limitation the old RF `c68`/`c95` scalars had -- correcting the
+  *average* overconfidence, not per-county variation in how well-fit the
+  raw interval already is. A learned, feature-dependent conformity score
+  (rather than a flat delta) would be more precise, at the cost of
+  needing more held-out data than a single scalar does per horizon --
+  same "worth revisiting once there's more history" conclusion the
+  RF-era version of this section reached, still true here.
+- **The shipped ± band is a symmetric approximation of a genuinely
+  asymmetric calibrated interval** (see `predict_with_interval()`'s own
+  docstring for the exact tradeoff) -- `/market-trends` could show the
+  true asymmetric `[lower, upper]` bounds directly instead, now that the
+  green/blue whisker pair already breaks from a single flat ± number;
+  not done yet because it's a real UI redesign (two edges instead of one
+  symmetric radius), not a data change.
 
 Investigating why mortgage rate helped Pennsylvania's random forest
 cleanly but originally hurt Texas's 6-month one (a real, documented
-finding before this round of tuning -- see git history for the previous
-version of this section) is less urgent now that hyperparameter tuning
-resolved the practical symptom: Texas's 6-month RF no longer struggles
-to generalize the feature the way it did. Still an open question about
-*why* the two states diverged, just no longer a production accuracy
-problem riding on the answer.
-
-The uncertainty-band fix (see "Uncertainty calibration" in each state's
-Results section) is a single scale factor per horizon, fit once on the
-whole state -- it corrects the *average* overconfidence but doesn't know
-that some counties' predictions are better-calibrated than others'. That
-gap matters less than it did (tuning brought every `c68` factor close to
-1 -- see above), but a per-county or feature-dependent calibration (e.g.
-conformal prediction with a learned conformity score, or quantile
-regression forests predicting the band directly) would still be more
-precise, at the cost of needing more held-out data than a single scalar
-does -- worth revisiting once there's more history to calibrate against,
-not before.
+finding from before RF was tuned at all -- see git history for that
+version of this section) is still an open question about *why* the two
+states diverged, but no longer a production accuracy problem riding on
+the answer -- RF isn't production anymore, and GB never showed the same
+mortgage-rate weakness RF once did.

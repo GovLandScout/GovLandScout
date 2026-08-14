@@ -50,17 +50,43 @@ horizon/state).
 
 random_search_gb() does the same thing for the gradient boosting
 comparison point, over its own GB_SEARCH_SPACE (max_iter/learning_rate/
-max_depth/max_leaf_nodes/min_samples_leaf/l2_regularization) -- it's
-tuned for the same reason RF is (an honest, not hand-picked, comparison),
-even though GB still isn't a production candidate (see
-make_gradient_boosting()'s docstring for why). If GB keeps winning at 3
-and 6 months after both models are actually tuned, that's a real signal
-worth acting on rather than an artifact of only one side of the
-comparison having been optimized.
+max_depth/max_leaf_nodes/min_samples_leaf/l2_regularization) -- originally
+tuned only for an honest CV comparison, back when GB wasn't a production
+candidate. Two full hyperparameter-search passes later (see
+model/README.md's "Hyperparameter search" for both), gradient boosting
+won at every Texas horizon and most Pennsylvania ones on a fairly-tuned
+comparison against an equally-tuned random forest -- a real, earned
+result, not an artifact of only one side getting attention. GB is now
+the production model.
 
-After cross-validation, one final "production" random forest per
-horizon is fit on *all* available data (there's no held-out test set to
-protect at deployment time -- more real data only helps) and saved for
+That required actually solving the problem the random forest's
+production role had been quietly resting on: GB's sequential trees can't
+produce RandomForestRegressor's tree-spread uncertainty estimate (see
+make_gradient_boosting()'s docstring). fit_gb_production_model() below
+uses quantile regression instead -- HistGradientBoostingRegressor
+supports loss="quantile", so fitting four extra models per horizon at
+GB_QUANTILES' quantiles (0.16/0.84 for a 68% interval, 0.025/0.975 for
+95%) alongside the usual mean-loss model gives a real prediction
+interval, not a proxy for one. calibrate_gb_quantiles() then checks
+those intervals the same way calibrate_uncertainty() checked RF's tree
+spread -- via held-out walk-forward CV residuals -- and widens them by
+whatever a conformal calibration set says is needed to actually hit the
+target coverage (Conformalized Quantile Regression, Romano et al. 2019:
+principled, not this project's own invention). Same "checked, not just
+asserted" standard the tree-spread approach was held to.
+
+One real gap this leaves: HistGradientBoostingRegressor has no
+`feature_importances_` (unlike RandomForestRegressor's impurity-based
+one) -- fit_gb_production_model() uses sklearn's permutation_importance
+instead, a different technique (how much does shuffling one feature
+hurt predictions, measured on the training data) that isn't numerically
+comparable to the old RF importances title-for-title, just the closest
+available equivalent question for this model class.
+
+After cross-validation, the final production models -- one mean-loss GB
+plus four quantile-loss GB per horizon, all fit on *all* available data
+(there's no held-out test set to protect at deployment time -- more real
+data only helps) -- are bundled into one joblib file per horizon for
 generate_predictions.py to use.
 
 Run with a state key from states.py as the only CLI arg, e.g.
@@ -76,6 +102,7 @@ import joblib
 import numpy as np
 import pandas as pd
 from sklearn.ensemble import HistGradientBoostingRegressor, RandomForestRegressor
+from sklearn.inspection import permutation_importance
 from sklearn.linear_model import LinearRegression
 from sklearn.metrics import mean_absolute_error
 
@@ -158,21 +185,38 @@ GB_SEARCH_SPACE = {
 
 
 def make_gradient_boosting(params: dict | None = None) -> HistGradientBoostingRegressor:
-    # A third CV comparison point alongside the random forest and linear
-    # regression, not a production-model swap: generate_predictions.py's
-    # uncertainty estimate (see predict_with_uncertainty() below) depends on
-    # averaging across many *independently* bagged trees, which is what
-    # RandomForestRegressor's estimators_ actually are. HistGradientBoostingRegressor's
-    # trees are sequential and each corrects the last, so a spread across
-    # them wouldn't carry the same "how much do independent trees agree"
-    # meaning -- swapping production models would mean redesigning
-    # uncertainty quantification too, not just picking a different
-    # regressor, so that's left as a separate decision for later.
+    # Mean-loss (squared_error, sklearn's default) point estimate. GB's
+    # sequential trees can't produce RandomForestRegressor's tree-spread
+    # uncertainty estimate the way predict_with_uncertainty() gets it from
+    # independently-bagged trees -- see GB_QUANTILES and
+    # fit_gb_production_model() below for what actually replaces it now
+    # that GB is the production model, not just a CV comparison point.
     return HistGradientBoostingRegressor(**(params or DEFAULT_GB_PARAMS), random_state=42)
 
 
 def sample_gb_params(rng: random.Random) -> dict:
     return {name: rng.choice(values) for name, values in GB_SEARCH_SPACE.items()}
+
+
+# (lower, upper) pairs bracketing a 68%- and 95%-coverage interval around
+# the median, the same two coverage levels RF's tree-spread calibration
+# targeted (see calibrate_uncertainty()) -- e.g. a well-calibrated
+# [0.16, 0.84] interval contains the true value 84%-16% = 68% of the time.
+GB_QUANTILES = {"lower68": 0.16, "upper68": 0.84, "lower95": 0.025, "upper95": 0.975}
+
+
+def make_gb_quantile_model(quantile: float, params: dict | None = None) -> HistGradientBoostingRegressor:
+    """Same hyperparameters random_search_gb() found for the mean-loss
+    model (n_estimators/max_depth/etc.), just swapped to quantile loss --
+    a deliberate simplification, not an oversight: independently
+    re-tuning each of the four quantile models would need its own random
+    search per quantile per horizon per state (4x the search cost this
+    project has already run twice), and the mean model's regularization
+    strength is a reasonable starting assumption for nearby quantiles of
+    the same target. calibrate_gb_quantiles() below is what actually
+    corrects for this being an approximation, not this function."""
+    config = dict(params or DEFAULT_GB_PARAMS)
+    return HistGradientBoostingRegressor(**config, loss="quantile", quantile=quantile, random_state=42)
 
 
 def predict_with_uncertainty(model: RandomForestRegressor, X: pd.DataFrame) -> tuple[np.ndarray, np.ndarray]:
@@ -236,6 +280,25 @@ def evaluate_fold(
     gb.fit(X_train, y_train)
     gb_mae = mean_absolute_error(y_test, gb.predict(X_test))
 
+    # GB's own uncertainty interval -- one quantile model per GB_QUANTILES
+    # entry, all sharing gb_params (see make_gb_quantile_model's docstring
+    # for why), fit here rather than only in fit_gb_production_model() so
+    # calibrate_gb_quantiles() below has real held-out predictions to
+    # check coverage against, the same held-out-CV standard
+    # calibrate_uncertainty() already holds RF's tree spread to.
+    gb_quantile_preds = {
+        name: make_gb_quantile_model(q, gb_params).fit(X_train, y_train).predict(X_test)
+        for name, q in GB_QUANTILES.items()
+    }
+    gb_score_68 = np.maximum(
+        gb_quantile_preds["lower68"] - y_test.to_numpy(), y_test.to_numpy() - gb_quantile_preds["upper68"]
+    )
+    gb_score_95 = np.maximum(
+        gb_quantile_preds["lower95"] - y_test.to_numpy(), y_test.to_numpy() - gb_quantile_preds["upper95"]
+    )
+    gb_coverage_68 = float(np.mean(gb_score_68 <= 0))
+    gb_coverage_95 = float(np.mean(gb_score_95 <= 0))
+
     lr = LinearRegression()
     lr.fit(X_train, y_train)
     lr_mae = mean_absolute_error(y_test, lr.predict(X_test))
@@ -243,13 +306,20 @@ def evaluate_fold(
     return {
         "naive_mae": naive_mae, "rf_mae": rf_mae, "lr_mae": lr_mae, "gb_mae": gb_mae,
         "rf_coverage_1std": coverage_1std, "rf_coverage_2std": coverage_2std,
+        "gb_coverage_68": gb_coverage_68, "gb_coverage_95": gb_coverage_95,
         "test_rows": len(test_df),
         # Raw per-row arrays, not just the aggregated coverage rates above --
-        # calibrate_uncertainty() below needs the individual (residual, std)
-        # pairs pooled across every fold to fit a calibration factor, and
-        # refitting the forest a second time just to get them back would
-        # waste this fold's work for no reason.
+        # calibrate_uncertainty()/calibrate_gb_quantiles() below need the
+        # individual per-row values pooled across every fold to fit their
+        # calibration factors, and refitting a second time just to get them
+        # back would waste this fold's work for no reason.
         "abs_residuals": abs_residuals, "pred_std": rf_pred_std,
+        # CQR's own conformity score (see calibrate_gb_quantiles()) is
+        # exactly "how far outside the raw interval did the true value
+        # land" -- positive means outside, so these are what that
+        # calibration step needs, not the raw quantile predictions
+        # themselves.
+        "gb_score_68": gb_score_68, "gb_score_95": gb_score_95,
     }
 
 
@@ -378,26 +448,70 @@ def calibrate_uncertainty(fold_results: list[dict]) -> dict:
     }
 
 
-def fit_production_model(dataset: pd.DataFrame, horizon: int, state_key: str, rf_params: dict | None = None) -> dict:
-    """The model generate_predictions.py actually uses -- trained on every
+def calibrate_gb_quantiles(fold_results: list[dict]) -> dict:
+    """Conformalized Quantile Regression (CQR; Romano, Patterson & Candès
+    2019) -- the same "held-out CV residuals, not a new model" spirit as
+    calibrate_uncertainty() above, adapted for an interval with two edges
+    instead of a single std. Each fold's gb_score_68/95 (see
+    evaluate_fold()) is already "how far past the raw interval's edge did
+    the true value land" -- positive means it landed outside, so the 68th/
+    95th percentile of these *held-out* scores is exactly the amount both
+    edges need to widen by for the interval to hit that coverage rate on
+    this same data, by construction (same "by construction" logic as
+    c68/c95 above, just solved from the other direction: widening a gap
+    instead of scaling a std). Applying delta68/delta95 to a future
+    prediction's raw interval (widening it, never narrowing -- see
+    generate_predictions.py) is the whole calibration step; there's no
+    model retraining involved."""
+    score_68 = np.concatenate([r["gb_score_68"] for r in fold_results])
+    score_95 = np.concatenate([r["gb_score_95"] for r in fold_results])
+    return {
+        "delta68": float(np.quantile(score_68, 0.68)),
+        "delta95": float(np.quantile(score_95, 0.95)),
+        "n": int(len(score_68)),
+        "scores_68": score_68,  # kept off the saved JSON by main() -- just for its own post-fit coverage check
+        "scores_95": score_95,
+    }
+
+
+def fit_gb_production_model(
+    dataset: pd.DataFrame, horizon: int, state_key: str, gb_params: dict | None = None,
+) -> dict:
+    """The model generate_predictions.py actually uses -- one mean-loss GB
+    plus four quantile-loss GB (see GB_QUANTILES), all trained on every
     row available, not held back from a test split, since there's no
     accuracy claim being protected here, just the best model deployable
-    today. rf_params defaults to DEFAULT_RF_PARAMS same as make_random_forest
-    itself, but main() always passes random_search_rf()'s winning config."""
+    today. Bundled into one dict/joblib file per horizon rather than five
+    separate files -- they're only ever loaded and used together."""
     target_col = f"target_change_{horizon}m"
     usable = dataset.dropna(subset=[target_col])
+    X, y = usable[FEATURE_COLS], usable[target_col]
 
-    model = make_random_forest(rf_params)
-    model.fit(usable[FEATURE_COLS], usable[target_col])
+    mean_model = make_gradient_boosting(gb_params)
+    mean_model.fit(X, y)
+    models = {"mean": mean_model}
+    for name, q in GB_QUANTILES.items():
+        models[name] = make_gb_quantile_model(q, gb_params).fit(X, y)
 
     model_path = Path(__file__).parent / f"county_distress_model_{state_key}_{horizon}m.joblib"
-    joblib.dump(model, model_path)
+    joblib.dump(models, model_path)
 
-    return {
-        "rows": len(usable),
-        "importances": pd.Series(model.feature_importances_, index=FEATURE_COLS).sort_values(ascending=False),
-        "model_path": model_path,
-    }
+    # permutation_importance, not feature_importances_ -- HistGradientBoostingRegressor
+    # doesn't expose the latter at all (see module docstring). n_repeats=5
+    # on the mean model only; the four quantile models exist to bracket an
+    # interval, not to be individually interpreted. scoring="neg_mean_absolute_error"
+    # explicitly rather than the estimator's own default score (R²) --
+    # these values are then directly "how much MAE gets worse when this
+    # feature is shuffled," in the same units as every MAE already printed
+    # elsewhere, not an unnormalized, harder-to-read R²-decrease number.
+    # Not comparable to RF's old feature_importances_ percentages, which
+    # summed to 1 by construction -- these don't and aren't meant to.
+    importance_result = permutation_importance(
+        mean_model, X, y, n_repeats=5, random_state=42, scoring="neg_mean_absolute_error",
+    )
+    importances = pd.Series(importance_result.importances_mean, index=FEATURE_COLS).sort_values(ascending=False)
+
+    return {"rows": len(usable), "importances": importances, "model_path": model_path}
 
 
 def summarize(fold_results: list[dict], key: str) -> tuple[float, float]:
@@ -463,31 +577,43 @@ def main():
         print(f"\nRandom forest uncertainty calibration (see predict_with_uncertainty()), "
               f"raw tree-spread std, before calibration: "
               f"{cov1_mean:.0%} of actual outcomes fell within the predicted ±1 std band "
-              f"(well-calibrated target: ~68%), {cov2_mean:.0%} within ±2 std (target: ~95%).")
+              f"(well-calibrated target: ~68%), {cov2_mean:.0%} within ±2 std (target: ~95%). "
+              f"Kept for comparison only -- RF is no longer the production model, see below.")
 
-        calibration = calibrate_uncertainty(folds)
-        ratios = calibration.pop("ratios")
-        cov68_after = float(np.mean(ratios <= calibration["c68"]))
-        cov95_after = float(np.mean(ratios <= calibration["c95"]))
-        print(f"Calibration factors fit on these {calibration['n']:,} held-out CV rows: "
-              f"c68={calibration['c68']:.2f}, c95={calibration['c95']:.2f} -- scaling std by c68 "
-              f"gives {cov68_after:.0%} coverage at the (now scaled) ±1 band, "
-              f"{cov95_after:.0%} at ±2 (c95/c68={calibration['c95'] / calibration['c68']:.2f}), "
-              f"by construction on this same held-out CV data (see calibrate_uncertainty()'s docstring "
-              f"for why that's a fair, non-circular check rather than a fit-your-own-test-set number).")
-        calibration_by_horizon[horizon] = calibration
+        rf_calibration = calibrate_uncertainty(folds)
+        rf_calibration.pop("ratios")
 
-        production = fit_production_model(dataset, horizon, state_key, rf_params)
-        print(f"\nProduction model trained on all {production['rows']:,} available rows "
-              f"(saved to {production['model_path'].name}).")
-        print("Feature importances:")
+        gb_cov68_mean, _ = summarize(folds, "gb_coverage_68")
+        gb_cov95_mean, _ = summarize(folds, "gb_coverage_95")
+        print(f"\nGradient boosting uncertainty calibration (see GB_QUANTILES), "
+              f"raw quantile interval, before calibration: "
+              f"{gb_cov68_mean:.0%} of actual outcomes fell within the raw [lower68, upper68] interval "
+              f"(well-calibrated target: ~68%), {gb_cov95_mean:.0%} within [lower95, upper95] (target: ~95%).")
+
+        gb_calibration = calibrate_gb_quantiles(folds)
+        scores_68, scores_95 = gb_calibration.pop("scores_68"), gb_calibration.pop("scores_95")
+        cov68_after = float(np.mean(scores_68 <= gb_calibration["delta68"]))
+        cov95_after = float(np.mean(scores_95 <= gb_calibration["delta95"]))
+        print(f"Calibration deltas fit on these {gb_calibration['n']:,} held-out CV rows: "
+              f"delta68={gb_calibration['delta68']:.4f}, delta95={gb_calibration['delta95']:.4f} -- "
+              f"widening the raw interval by delta68 on each side gives {cov68_after:.0%} coverage, "
+              f"{cov95_after:.0%} at the delta95-widened interval, by construction on this same "
+              f"held-out CV data (see calibrate_gb_quantiles()'s docstring for why that's a fair, "
+              f"non-circular check rather than a fit-your-own-test-set number).")
+        calibration_by_horizon[horizon] = {"rf": rf_calibration, "gb": gb_calibration}
+
+        production = fit_gb_production_model(dataset, horizon, state_key, gb_params)
+        print(f"\nProduction model (gradient boosting, mean + 4 quantile) trained on all "
+              f"{production['rows']:,} available rows (saved to {production['model_path'].name}).")
+        print("Feature importances (permutation MAE-increase, mean model only -- see module docstring):")
         for feature, importance in production["importances"].items():
-            print(f"  {feature:<32} {importance:.3f}")
+            print(f"  {feature:<32} {importance:.4f}")
 
     calibration_path = Path(__file__).parent / f"county_distress_calibration_{state_key}.json"
     calibration_path.write_text(json.dumps(calibration_by_horizon, indent=2))
     print(f"\nSaved uncertainty calibration factors to {calibration_path.name} "
-          f"(generate_predictions.py applies c68 to the shipped ± band).")
+          f"(generate_predictions.py applies gb.delta68/delta95 to widen the shipped ± band; "
+          f"rf.c68/c95 kept for reference only, no longer used in production).")
 
 
 if __name__ == "__main__":
