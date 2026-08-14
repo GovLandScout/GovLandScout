@@ -29,16 +29,20 @@ queries for both return zero). Fayette and Columbia turned out to have
 their own separate per-county layers via PASDA instead (see
 FAYETTE_SOURCE/COLUMBIA_SOURCE below); Monroe's PASDA layer exists too
 but uses a parcel numbering scheme that doesn't match what bid4assets.com
-scrapes (see FAYETTE_SOURCE's own comment), so Monroe isn't covered by
-anything in this script. Monroe, plus every county not listed in
-PARCEL_ID_STRATEGIES below, is left to geocode_backfill.py's
-address-based approach -- this script only touches the counties below,
-each one verified against real production data before being added (see
-each strategy's own comment for its match rate). Some counties' first
-attempt only caught part of that county's listings -- a second, wider
-account-number transform found later (see berks_bid4assets_transform's
-and fayette_bid4assets_transform's own docstrings) recovers more of them
-without changing anything about already-matched rows.
+scrapes. Monroe's own *county-run* GIS layer, found by reverse-engineering
+its property-search portal rather than checking the usual statewide/PASDA
+sources, turned out to work directly instead (see MONROE_SOURCE) --
+easily the strongest single result in this file (99%), for what had been
+the largest unresolved chunk of listings this whole approach left behind.
+Every county not listed in PARCEL_ID_STRATEGIES below is left to
+geocode_backfill.py's address-based approach -- this script only touches
+the counties below, each one verified against real production data
+before being added (see each strategy's own comment for its match rate).
+Some counties' first attempt only caught part of that county's listings
+-- a second, wider account-number transform found later (see
+berks_bid4assets_transform's and fayette_bid4assets_transform's own
+docstrings) recovers more of them without changing anything about
+already-matched rows.
 
 Run after chester_scraper.py, montco_scraper.py, and (whenever its own
 separate weekly job runs) bid4assets_scraper.py have added this
@@ -49,6 +53,7 @@ run_daily_scrapers.py's ordering.
 
 import re
 import time
+from typing import Callable
 
 import requests
 
@@ -63,27 +68,51 @@ BATCH_SIZE = 200
 BATCH_DELAY_SECONDS = 0.5
 
 
+def build_address(attrs: dict) -> str | None:
+    """Default address builder, shaped for DEP's own fields (a single
+    already-combined PROPERTY_ADDRESS_1 plus CITY/ZIP) -- see
+    ParcelSource's own docstring for how a source with a different shape
+    (e.g. MONROE_SOURCE) overrides this instead of reusing it."""
+    street = (attrs.get("PROPERTY_ADDRESS_1") or "").strip()
+    if not street:
+        return None
+    city = (attrs.get("CITY") or "").strip()
+    zip_code = (attrs.get("ZIP") or "").strip()
+    parts = [street, city, "PA" + (f" {zip_code}" if zip_code else "")] if city else [street, "PA"]
+    return ", ".join(p for p in parts if p)
+
+
 class ParcelSource:
     """One queryable ArcGIS layer: a URL, the field holding its parcel id,
     and (for a statewide layer covering many counties, like DEP's) an
     extra WHERE clause narrowing it to one county. `has_address` controls
-    whether build_address() is even attempted -- PASDA's per-county
-    layers (see FAYETTE below) publish geometry only, no address fields at
-    all, so asking them for one would just silently return None every time
-    rather than the useful signal "this source can't help with an
-    address"."""
+    whether an address is even attempted -- PASDA's per-county layers (see
+    FAYETTE below) publish geometry only, no address fields at all, so
+    asking them for one would just silently return None every time rather
+    than the useful signal "this source can't help with an address".
+    `address_fields`/`build_address_fn` default to DEP's own field names
+    and shape (a single already-combined PROPERTY_ADDRESS_1 plus CITY/ZIP)
+    -- pass both together for a source with a differently-shaped schema
+    (see MONROE_SOURCE for a real example, whose address fields are split
+    across STNUMF/STNAME/etc. instead)."""
 
-    def __init__(self, url: str, id_field: str, has_address: bool, county_where: str | None = None):
+    def __init__(
+        self, url: str, id_field: str, has_address: bool, county_where: str | None = None,
+        address_fields: tuple[str, ...] = ("PROPERTY_ADDRESS_1", "CITY", "ZIP"),
+        build_address_fn: Callable[[dict], str | None] | None = None,
+    ):
         self.url = url
         self.id_field = id_field
         self.has_address = has_address
         self.county_where = county_where
+        self.address_fields = address_fields
+        self.build_address_fn = build_address_fn or build_address
 
     def query(self, candidate_ids: list[str]) -> dict[str, dict]:
         """candidate id -> {"attributes": ..., "geometry": {"rings": [...]}} for every match,
         keeping only the first feature per id if a source has more than one for it (see
         cumberland_bid4assets_transform's docstring for a real example of why that can happen)."""
-        out_fields = f"{self.id_field},PROPERTY_ADDRESS_1,CITY,ZIP" if self.has_address else self.id_field
+        out_fields = f"{self.id_field}," + ",".join(self.address_fields) if self.has_address else self.id_field
         found = {}
         for i in range(0, len(candidate_ids), BATCH_SIZE):
             chunk = candidate_ids[i:i + BATCH_SIZE]
@@ -123,9 +152,10 @@ def dep_source(county_upper: str) -> ParcelSource:
 # with a different id field (TAXIDNUM) and no address fields at all, just
 # geometry. Monroe has an equivalent-looking PASDA layer too, but its own
 # id field (MAPNUMBER, a 14-digit tax-map-sheet code) doesn't match
-# bid4assets.com's scraped account numbers (an "district.block.lot"-style
-# PIN, e.g. "20.8E.1.102") at all -- checked directly against 20 real
-# rows, zero matched -- so Monroe isn't included below.
+# bid4assets.com's scraped account numbers at all -- checked directly
+# against 20 real rows, zero matched. Monroe's own county GIS turned out
+# to have a working layer instead, just not this one -- see MONROE_SOURCE
+# below.
 FAYETTE_SOURCE = ParcelSource(
     "https://imagery.pasda.psu.edu/arcgis/rest/services/pasda/FayetteCounty/MapServer/2/query",
     id_field="TAXIDNUM", has_address=False,
@@ -137,6 +167,41 @@ FAYETTE_SOURCE = ParcelSource(
 COLUMBIA_SOURCE = ParcelSource(
     "https://imagery.pasda.psu.edu/arcgis/rest/services/pasda/ColumbiaCounty/MapServer/2/query",
     id_field="PIN", has_address=False,
+)
+
+
+def build_monroe_address(attrs: dict) -> str | None:
+    """Monroe's own layer already gives a single pre-joined LOCATION field
+    ("3597 LAKEWOOD RD ", or just "SUNSHINE LN " with no house number for
+    the many rural/unaddressed lots this county has -- see
+    MONROE_SOURCE's own comment) rather than DEP's separate
+    PROPERTY_ADDRESS_1/CITY/ZIP columns, so this doesn't reuse
+    build_address() -- there's nothing to join, just one field to clean
+    up. "UNASSIGNED" is this layer's own explicit value for "no street
+    name or number recorded at all", not a placeholder worth shipping as
+    if it were real."""
+    location = (attrs.get("LOCATION") or "").strip()
+    if not location or location.upper() == "UNASSIGNED":
+        return None
+    return f"{location}, PA"
+
+
+# Monroe -- bid4assets.com's single largest PA source, and (until this)
+# the largest unresolved chunk of listings this whole script's approach
+# ever left behind -- isn't in DEP's statewide layer and doesn't match
+# its own PASDA layer's numbering (see FAYETTE_SOURCE's comment above),
+# but reverse-engineering the county's own iasWorld property-search
+# portal (agencies.monroecountypa.gov) turned up the ArcGIS service its
+# own map tab quietly calls: a complete, public, county-run parcel layer
+# with a PARID field that matches bid4assets.com's scraped account
+# numbers directly. Verified against 1,439 real ungeocoded Monroe
+# listings: 1,430 (99%) matched -- by far the strongest hit rate of any
+# source in this whole file, PARID here being this county's own
+# authoritative parcel id, not a scraped platform's reformatting of it.
+MONROE_SOURCE = ParcelSource(
+    "https://monroegis.org/webadaptor/rest/services/Tylers_IAS/Parcels_PublicView/MapServer/0/query",
+    id_field="PARID", has_address=True,
+    address_fields=("LOCATION",), build_address_fn=build_monroe_address,
 )
 
 
@@ -252,6 +317,7 @@ PARCEL_ID_STRATEGIES = {
     ("bid4assets.com", "Fayette"): (FAYETTE_SOURCE, fayette_bid4assets_transform),  # ~1,637/1,861 (88%) + 119/215 (55%) after trimming extra segments, coordinates only, no address
     ("montgomerycountypa.gov", "Montgomery"): (dep_source("MONTGOMERY"), montgomery_dep_transform),  # 291/312 (93%)
     ("bid4assets.com", "Columbia"): (COLUMBIA_SOURCE, columbia_bid4assets_transform),  # 35/200 (17%), coordinates only, no address
+    ("bid4assets.com", "Monroe"): (MONROE_SOURCE, identity),  # 1,430/1,439 (99%)
 }
 
 
@@ -287,16 +353,6 @@ def ring_centroid(rings: list[list[list[float]]]) -> tuple[float, float] | None:
     return lat, lon
 
 
-def build_address(attrs: dict) -> str | None:
-    street = (attrs.get("PROPERTY_ADDRESS_1") or "").strip()
-    if not street:
-        return None
-    city = (attrs.get("CITY") or "").strip()
-    zip_code = (attrs.get("ZIP") or "").strip()
-    parts = [street, city, "PA" + (f" {zip_code}" if zip_code else "")] if city else [street, "PA"]
-    return ", ".join(p for p in parts if p)
-
-
 def main():
     conn = combined_db.get_connection()
     ungeocoded = fetch_ungeocoded(conn)
@@ -326,7 +382,7 @@ def main():
             lat, lon = centroid
             combined_db.update_lat_lon(conn, county, account_number, lat, lon, state="PA")
             if parcel_source.has_address:
-                address = build_address(feature["attributes"])
+                address = parcel_source.build_address_fn(feature["attributes"])
                 if address:
                     combined_db.update_address(conn, county, account_number, address)
             updated += 1
