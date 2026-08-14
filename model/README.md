@@ -193,6 +193,27 @@ only, not calibration, but tuning fixed most of the uncertainty-band
 problem as a side effect too -- see "Uncertainty calibration" in each
 state's section below.
 
+`random_search_gb()` does the same thing for the gradient boosting
+comparison point (see module docstring), over its own search space
+(`max_iter`/`learning_rate`/`max_depth`/`max_leaf_nodes`/
+`min_samples_leaf`/`l2_regularization`):
+
+| State | Horizon | Winning config (vs. the old default) | MAE improvement |
+|---|---|---|---|
+| TX | 1 month | `max_iter=500, max_depth=3, min_samples_leaf=30, l2_regularization=0.5` | 1.8% |
+| TX | 3 months | `max_iter=400, max_depth=None, min_samples_leaf=20` | 1.0% |
+| TX | 6 months | `max_iter=500, max_depth=3, min_samples_leaf=30, l2_regularization=0.5` | 2.8% |
+| PA | 1 month | `max_iter=400, max_depth=None, min_samples_leaf=20` | 0.9% |
+| PA | 3 months | `max_iter=400, max_depth=None, min_samples_leaf=20` | 1.3% |
+| PA | 6 months | `max_iter=500, learning_rate=0.03, max_depth=10, min_samples_leaf=10, l2_regularization=1.0` | 0.7% |
+
+Smaller gains than RF's across the board -- unsurprising, since the old
+hand-picked GB config was never as clearly wrong as RF's fixed
+`max_depth=10` turned out to be (see the pattern noted above). But small
+and real still moves the comparison: see each state's Results section
+below for what tuning *both* sides changed about which model actually
+wins at which horizon.
+
 ## Results: Texas (walk-forward cross-validation, 2026-08-12)
 
 207 TX counties, ~15,500 county-month training examples spanning 2019-03
@@ -200,30 +221,36 @@ through 2026-06. Evaluated on 4 rolling walk-forward folds per horizon
 (3-month test windows each, all in 2024-11 through 2026-05) rather than
 one fixed split -- see train_model.py's module docstring for why a
 single split understates how much performance actually varies month to
-month. RF here uses each horizon's winning config from "Hyperparameter
-search" above, not the old fixed default.
+month. RF and GB here each use their own horizon's winning config from
+"Hyperparameter search" above, not the old fixed defaults.
 
 | Horizon | Naive MAE | Linear MAE | RF MAE | GB MAE | RF vs. naive | Linear vs. naive | GB vs. naive |
 |---|---|---|---|---|---|---|---|
-| 1 month | 0.0162 ± 0.0013 | 0.0128 ± 0.0011 | **0.0127 ± 0.0004** | 0.0129 ± 0.0004 | **21.2%** | 20.6% | 20.3% |
-| 3 months | 0.0378 ± 0.0067 | 0.0249 ± 0.0011 | 0.0222 ± 0.0017 | 0.0219 ± 0.0026 | 41.3% | 34.0% | **41.9%** |
-| 6 months | 0.0505 ± 0.0059 | 0.0258 ± 0.0019 | 0.0267 ± 0.0072 | 0.0257 ± 0.0064 | 47.1% | 49.0% | **49.1%** |
+| 1 month | 0.0162 ± 0.0013 | 0.0128 ± 0.0011 | 0.0127 ± 0.0004 | **0.0127 ± 0.0005** | 21.2% | 20.6% | **21.8%** |
+| 3 months | 0.0378 ± 0.0067 | 0.0249 ± 0.0011 | 0.0222 ± 0.0017 | **0.0217 ± 0.0025** | 41.3% | 34.0% | **42.5%** |
+| 6 months | 0.0505 ± 0.0059 | 0.0258 ± 0.0019 | 0.0267 ± 0.0072 | **0.0250 ± 0.0036** | 47.1% | 49.0% | **50.5%** |
 
 (± is one standard deviation across the 4 folds -- how consistent each
 model's error was across different stretches of time, not the accuracy
 of a single number.)
 
-**The random forest now wins outright at 1 month** (21.2% vs. naive,
-ahead of both linear regression and gradient boosting -- it previously
-lost to both, at only 15.5%), and **6 months went from the worst result
-in this whole table (36.1%, the finding that motivated the hyperparameter
-search) to competitive with linear regression and gradient boosting**
-(47.1% vs. their 49.0%/49.1%), with fold-to-fold consistency more than
-1.5x tighter (± 0.0072, down from ± 0.0116). Gradient boosting still
-wins at 3 and 6 months, by a narrower margin than before -- this remains
-a comparison point, not a production candidate, for the reason given in
-Scope above (its sequential trees can't produce the same tree-spread
-uncertainty estimate).
+**Once both models are actually tuned, gradient boosting wins outright
+at every horizon in Texas**, including 1 month, where the random forest
+had just taken the lead from it (21.2%) by a hair -- tuning GB too pushed
+it back ahead (21.8%). That's a real, if modest, answer to the question
+"is the comparison table honest, or does GB just look better because
+nobody tuned RF as hard" (see the Scope section's original framing): with
+both sides tuned, GB comes out ahead everywhere, not by an accident of
+which model happened to get attention first. **6 months also improved
+further past the hyperparameter-search finding that started this
+section** -- the random forest went from the worst result in this whole
+table (36.1%, before any tuning existed) to 47.1%, and GB's own tuning
+pushed the horizon's best result to 50.5%. GB remains a comparison point,
+not a production candidate, for the reason given in Scope above (its
+sequential trees can't produce the same tree-spread uncertainty
+estimate) -- but a comparison point this consistently ahead, on a fairly
+tuned comparison, is exactly the kind of finding "Next steps" flags as
+worth someday revisiting that production-model decision over.
 
 Feature importances (production models, fit on all available data):
 
@@ -271,21 +298,25 @@ honest tweak, not the roughly-doubling fix it used to be.
 66 PA counties, ~5,300-5,400 county-month training examples (fewer than
 Texas simply because Pennsylvania has far fewer counties -- 67 total vs.
 254), same 2019-03 through 2026-06 span and same 4-fold walk-forward
-setup. RF here uses each horizon's winning config from "Hyperparameter
-search" above, not the old fixed default.
+setup. RF and GB here each use their own horizon's winning config from
+"Hyperparameter search" above, not the old fixed defaults.
 
 | Horizon | Naive MAE | Linear MAE | RF MAE | GB MAE | RF vs. naive | Linear vs. naive | GB vs. naive |
 |---|---|---|---|---|---|---|---|
-| 1 month | 0.0184 ± 0.0028 | 0.0118 ± 0.0004 | 0.0126 ± 0.0005 | 0.0124 ± 0.0002 | 31.4% | **35.7%** | 32.9% |
-| 3 months | 0.0379 ± 0.0032 | 0.0232 ± 0.0020 | 0.0216 ± 0.0010 | 0.0213 ± 0.0013 | 43.0% | 38.9% | **43.9%** |
-| 6 months | 0.0518 ± 0.0151 | 0.0224 ± 0.0010 | 0.0234 ± 0.0019 | 0.0223 ± 0.0026 | 54.9% | 56.7% | **56.9%** |
+| 1 month | 0.0184 ± 0.0028 | 0.0118 ± 0.0004 | 0.0126 ± 0.0005 | 0.0122 ± 0.0002 | 31.4% | **35.7%** | 33.4% |
+| 3 months | 0.0379 ± 0.0032 | 0.0232 ± 0.0020 | 0.0216 ± 0.0010 | 0.0210 ± 0.0015 | 43.0% | 38.9% | **44.6%** |
+| 6 months | 0.0518 ± 0.0151 | 0.0224 ± 0.0010 | 0.0234 ± 0.0019 | 0.0222 ± 0.0023 | 54.9% | 56.7% | **57.2%** |
 
-**Pennsylvania's gains from tuning were real but modest** -- 1-3
-percentage points of MAE improvement at every horizon, versus Texas's
-much larger 6-month jump. Linear regression still wins at 1 and 6 months
-and gradient boosting at 3, same pattern as before tuning, but the random
-forest -- the one actually deployed -- narrowed the gap at every horizon.
-With a third as many counties and a smaller, more geographically compact
+**Pennsylvania's gains from tuning were real but modest on both sides**
+-- 1-3 percentage points of MAE improvement at every horizon for RF, well
+under 2 points for GB, versus Texas's much larger 6-month RF jump. Linear
+regression still wins at 1 month and gradient boosting at 3 and 6 months,
+same pattern as before GB was tuned too -- unlike Texas, tuning both
+models here didn't flip which one wins anywhere, just widened gradient
+boosting's existing edge at 3 and 6 months a little further (43.9% ->
+44.6%, 56.9% -> 57.2%). The random forest -- the one actually deployed --
+still narrowed the gap at every horizon versus its own pre-tuning
+self. With a third as many counties and a smaller, more geographically compact
 state, PA's 6-month fold error is also still the least consistent of any
 horizon/state combination here (± up to 0.0151) -- a smaller, noisier
 dataset is a plausible reason the more flexible models have a harder time
@@ -398,11 +429,25 @@ entirely: `RANDOM_SEARCH_ITER` is currently 15 candidates per
 horizon/state; a wider or more targeted search (e.g. sampling more
 densely around the winning configs found here, which consistently
 avoided a shallow `max_depth`) might find further gains, at the cost of
-more CV fitting time. Separately, gradient boosting still wins outright
-at 3 and 6 months in both states even after tuning the random forest --
-worth someday asking whether *its* hyperparameters were ever tuned as
-carefully as the production model's now are, since today's GB numbers
-still use the same hand-picked config from before this search existed.
+more CV fitting time.
+
+Tuning gradient boosting's own hyperparameters (`random_search_gb()`,
+same section above) is also now done, not an open item -- and it changed
+the answer to "is GB actually better, or just untuned RF losing to a
+better-tuned comparison": in Texas, GB now wins at **every** horizon,
+including 1 month, where RF had just taken the lead from it by tuning
+alone. Pennsylvania's picture barely moved (GB was already winning at 3
+and 6 months, still does, by a slightly wider margin). That's a real,
+fairly-earned result now, not an artifact of only one side of the
+comparison getting attention -- worth treating "should GB become the
+production model" as a real decision to make deliberately, not defer
+indefinitely. The blocker is still what Scope describes: GB's sequential
+trees can't produce the same tree-spread uncertainty estimate
+`predict_with_uncertainty()` depends on, so switching isn't a config
+change, it's redesigning how `/market-trends` gets its confidence bands
+at all (quantile regression and conformal prediction -- see the
+calibration paragraph below -- are the natural candidates for what would
+replace it).
 
 Investigating why mortgage rate helped Pennsylvania's random forest
 cleanly but originally hurt Texas's 6-month one (a real, documented

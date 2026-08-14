@@ -394,22 +394,27 @@ def upsert_listing(
         ON CONFLICT (state, county, account_number) DO UPDATE SET
             precinct = EXCLUDED.precinct,
             minimum_bid = EXCLUDED.minimum_bid,
-            estimated_value = EXCLUDED.estimated_value,
-            -- COALESCE, not a plain overwrite, for address/latitude/longitude:
-            -- every caller of this function defaults latitude/longitude to
-            -- None (no scraper geocodes itself -- that's geocode_backfill.py/
-            -- pa_parcel_geocode.py's job, run as separate steps afterward),
-            -- and several scrapers can legitimately come back with
-            -- address=None on a given run too (a tripped detail-fetch
-            -- circuit breaker, a site that just doesn't always publish one).
-            -- A plain overwrite here meant every single re-scrape of an
-            -- already-geocoded listing silently wiped its coordinates back
-            -- to NULL -- confirmed directly on 2026-08-13: Cumberland
-            -- County's listings, geocoded via pa_parcel_geocode.py earlier
-            -- this session, dropped to 0/397 geocoded after bid4assets_scraper.py's
+            -- COALESCE, not a plain overwrite, for estimated_value/address/
+            -- latitude/longitude: every caller of this function defaults
+            -- latitude/longitude to None (no scraper geocodes itself --
+            -- that's geocode_backfill.py/pa_parcel_geocode.py's job, run as
+            -- separate steps afterward), and several scrapers can
+            -- legitimately come back with address=None or estimated_value=
+            -- None on a given run too (a tripped detail-fetch circuit
+            -- breaker, a site that just doesn't always publish one --
+            -- hctax_scraper.py's own adjudged_value is empty for some
+            -- Harris County rows even though hcad_value_backfill.py fills
+            -- in a real estimated_value for them separately, same pattern
+            -- as address/lat-lon). A plain overwrite here meant every
+            -- single re-scrape of an already-enriched listing silently
+            -- wiped that enrichment back to NULL -- confirmed directly on
+            -- 2026-08-13 for coordinates specifically: Cumberland County's
+            -- listings, geocoded via pa_parcel_geocode.py earlier that
+            -- session, dropped to 0/397 geocoded after bid4assets_scraper.py's
             -- next routine run. COALESCE keeps whatever's already stored
             -- whenever this particular run didn't produce a real value,
             -- while still accepting a genuine new value when one exists.
+            estimated_value = COALESCE(EXCLUDED.estimated_value, listings.estimated_value),
             address = COALESCE(EXCLUDED.address, listings.address),
             description = EXCLUDED.description,
             status = EXCLUDED.status,

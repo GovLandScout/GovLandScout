@@ -48,6 +48,16 @@ whether this actually fixed the Texas 6-month weakness that section had
 previously documented (RF beating naive by only 36.1%, worst of any
 horizon/state).
 
+random_search_gb() does the same thing for the gradient boosting
+comparison point, over its own GB_SEARCH_SPACE (max_iter/learning_rate/
+max_depth/max_leaf_nodes/min_samples_leaf/l2_regularization) -- it's
+tuned for the same reason RF is (an honest, not hand-picked, comparison),
+even though GB still isn't a production candidate (see
+make_gradient_boosting()'s docstring for why). If GB keeps winning at 3
+and 6 months after both models are actually tuned, that's a real signal
+worth acting on rather than an artifact of only one side of the
+comparison having been optimized.
+
 After cross-validation, one final "production" random forest per
 horizon is fit on *all* available data (there's no held-out test set to
 protect at deployment time -- more real data only helps) and saved for
@@ -115,9 +125,30 @@ def sample_rf_params(rng: random.Random) -> dict:
     return {name: rng.choice(values) for name, values in RF_SEARCH_SPACE.items()}
 
 
-def make_gradient_boosting() -> HistGradientBoostingRegressor:
-    # Added as a third CV comparison point alongside the random forest and
-    # linear regression, not a production-model swap: generate_predictions.py's
+# The hand-picked config every GB fit used before random_search_gb()
+# existed -- also candidate zero in every GB search below, same reasoning
+# as DEFAULT_RF_PARAMS.
+DEFAULT_GB_PARAMS = {"max_depth": 6, "learning_rate": 0.05, "max_iter": 300}
+
+# max_leaf_nodes/min_samples_leaf/l2_regularization left untouched by the
+# original hand-picked config (sklearn defaults: 31, 20, 0.0) -- included
+# here since they're the standard levers for controlling how much an
+# individual boosting stage can overfit, the same kind of regularization
+# RF_SEARCH_SPACE's min_samples_leaf/min_samples_split/max_features tune
+# on the forest side.
+GB_SEARCH_SPACE = {
+    "max_iter": [100, 200, 300, 400, 500],
+    "learning_rate": [0.01, 0.03, 0.05, 0.1, 0.2],
+    "max_depth": [3, 4, 6, 8, 10, None],
+    "max_leaf_nodes": [15, 31, 63, 127],
+    "min_samples_leaf": [5, 10, 20, 30, 50],
+    "l2_regularization": [0.0, 0.1, 0.5, 1.0],
+}
+
+
+def make_gradient_boosting(params: dict | None = None) -> HistGradientBoostingRegressor:
+    # A third CV comparison point alongside the random forest and linear
+    # regression, not a production-model swap: generate_predictions.py's
     # uncertainty estimate (see predict_with_uncertainty() below) depends on
     # averaging across many *independently* bagged trees, which is what
     # RandomForestRegressor's estimators_ actually are. HistGradientBoostingRegressor's
@@ -126,7 +157,11 @@ def make_gradient_boosting() -> HistGradientBoostingRegressor:
     # meaning -- swapping production models would mean redesigning
     # uncertainty quantification too, not just picking a different
     # regressor, so that's left as a separate decision for later.
-    return HistGradientBoostingRegressor(max_depth=6, learning_rate=0.05, max_iter=300, random_state=42)
+    return HistGradientBoostingRegressor(**(params or DEFAULT_GB_PARAMS), random_state=42)
+
+
+def sample_gb_params(rng: random.Random) -> dict:
+    return {name: rng.choice(values) for name, values in GB_SEARCH_SPACE.items()}
 
 
 def predict_with_uncertainty(model: RandomForestRegressor, X: pd.DataFrame) -> tuple[np.ndarray, np.ndarray]:
@@ -154,7 +189,10 @@ def walk_forward_folds(months: list, n_folds: int, test_window: int) -> list[tup
     return folds
 
 
-def evaluate_fold(train_df: pd.DataFrame, test_df: pd.DataFrame, target_col: str, rf_params: dict | None = None) -> dict:
+def evaluate_fold(
+    train_df: pd.DataFrame, test_df: pd.DataFrame, target_col: str,
+    rf_params: dict | None = None, gb_params: dict | None = None,
+) -> dict:
     X_train, y_train = train_df[FEATURE_COLS], train_df[target_col]
     X_test, y_test = test_df[FEATURE_COLS], test_df[target_col]
 
@@ -183,7 +221,7 @@ def evaluate_fold(train_df: pd.DataFrame, test_df: pd.DataFrame, target_col: str
     coverage_1std = float(np.mean(abs_residuals <= rf_pred_std))
     coverage_2std = float(np.mean(abs_residuals <= 2 * rf_pred_std))
 
-    gb = make_gradient_boosting()
+    gb = make_gradient_boosting(gb_params)
     gb.fit(X_train, y_train)
     gb_mae = mean_absolute_error(y_test, gb.predict(X_test))
 
@@ -204,7 +242,10 @@ def evaluate_fold(train_df: pd.DataFrame, test_df: pd.DataFrame, target_col: str
     }
 
 
-def cross_validate(dataset: pd.DataFrame, horizon: int, rf_params: dict | None = None) -> list[dict]:
+def cross_validate(
+    dataset: pd.DataFrame, horizon: int,
+    rf_params: dict | None = None, gb_params: dict | None = None,
+) -> list[dict]:
     target_col = f"target_change_{horizon}m"
     usable = dataset.dropna(subset=[target_col])
     months = sorted(usable["year_month"].unique())
@@ -215,7 +256,7 @@ def cross_validate(dataset: pd.DataFrame, horizon: int, rf_params: dict | None =
         test_df = usable[usable["year_month"].isin(test_months)]
         if train_df.empty or test_df.empty:
             continue
-        result = evaluate_fold(train_df, test_df, target_col, rf_params)
+        result = evaluate_fold(train_df, test_df, target_col, rf_params, gb_params)
         result["test_range"] = f"{test_months[0]}..{test_months[-1]}"
         fold_results.append(result)
     return fold_results
@@ -258,6 +299,42 @@ def random_search_rf(dataset: pd.DataFrame, horizon: int, n_iter: int = RANDOM_S
 
     results.sort(key=lambda r: r["mean_mae"])
     baseline = next(r for r in results if r["params"] == DEFAULT_RF_PARAMS)
+    return {"best": results[0], "baseline": baseline, "all": results}
+
+
+def random_search_gb(dataset: pd.DataFrame, horizon: int, n_iter: int = RANDOM_SEARCH_ITER) -> dict:
+    """Same approach as random_search_rf() (see its own docstring for why
+    this is hand-rolled instead of sklearn's RandomizedSearchCV), applied
+    to GB_SEARCH_SPACE instead: only fits gradient boosting per candidate,
+    not the random forest or linear regression too."""
+    target_col = f"target_change_{horizon}m"
+    usable = dataset.dropna(subset=[target_col])
+    months = sorted(usable["year_month"].unique())
+    folds = walk_forward_folds(months, N_CV_FOLDS, CV_TEST_WINDOW_MONTHS)
+
+    rng = random.Random(RANDOM_SEARCH_SEED)
+    candidates = [DEFAULT_GB_PARAMS] + [sample_gb_params(rng) for _ in range(n_iter)]
+
+    results = []
+    for params in candidates:
+        fold_maes = []
+        for train_months, test_months in folds:
+            train_df = usable[usable["year_month"].isin(train_months)]
+            test_df = usable[usable["year_month"].isin(test_months)]
+            if train_df.empty or test_df.empty:
+                continue
+            X_train, y_train = train_df[FEATURE_COLS], train_df[target_col]
+            X_test, y_test = test_df[FEATURE_COLS], test_df[target_col]
+            gb = make_gradient_boosting(params)
+            gb.fit(X_train, y_train)
+            fold_maes.append(mean_absolute_error(y_test, gb.predict(X_test)))
+        if not fold_maes:
+            continue
+        maes = pd.Series(fold_maes)
+        results.append({"params": params, "mean_mae": maes.mean(), "std_mae": maes.std()})
+
+    results.sort(key=lambda r: r["mean_mae"])
+    baseline = next(r for r in results if r["params"] == DEFAULT_GB_PARAMS)
     return {"best": results[0], "baseline": baseline, "all": results}
 
 
@@ -340,7 +417,19 @@ def main():
                   f"({1 - best['mean_mae'] / baseline['mean_mae']:.1%} lower) -- used for every RF fit below.")
         rf_params = best["params"]
 
-        folds = cross_validate(dataset, horizon, rf_params)
+        gb_search = random_search_gb(dataset, horizon)
+        gb_best, gb_baseline = gb_search["best"], gb_search["baseline"]
+        if gb_best["params"] == gb_baseline["params"]:
+            print(f"Random search over {RANDOM_SEARCH_ITER} GB candidate(s): the hand-picked default "
+                  f"{DEFAULT_GB_PARAMS} was already the best of them (MAE {gb_best['mean_mae']:.4f}).")
+        else:
+            print(f"Random search over {RANDOM_SEARCH_ITER} GB candidate(s): {gb_best['params']} "
+                  f"reached MAE {gb_best['mean_mae']:.4f}±{gb_best['std_mae']:.4f}, vs. the hand-picked default's "
+                  f"{gb_baseline['mean_mae']:.4f}±{gb_baseline['std_mae']:.4f} "
+                  f"({1 - gb_best['mean_mae'] / gb_baseline['mean_mae']:.1%} lower) -- used for every GB fit below.")
+        gb_params = gb_best["params"]
+
+        folds = cross_validate(dataset, horizon, rf_params, gb_params)
         print(f"\n{N_CV_FOLDS}-fold walk-forward cross-validation "
               f"({CV_TEST_WINDOW_MONTHS}-month test windows each):\n")
         print(f"{'Test months':<20}{'Rows':<8}{'Naive MAE':<12}{'Linear MAE':<13}{'RF MAE':<10}{'GB MAE':<10}")
