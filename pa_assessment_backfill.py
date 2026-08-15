@@ -25,7 +25,7 @@ over, roughly annually.
 Each county publishes its parcels layer under its own GIS org, with its
 own field names and its own account-number format -- there's no
 standardized statewide schema, so this is a per-county config
-(COUNTY_CONFIGS below), not one general parser. Three counties confirmed
+(COUNTY_CONFIGS below), not one general parser. Five counties confirmed
 against real listings already in the database before writing this:
 
   - Chester: id field (UPI) matches account_number exactly.
@@ -36,6 +36,16 @@ against real listings already in the database before writing this:
     "...-013") -- confirmed against a real parcel whose GIS-published
     SITUS address ("493 ARLINGTON ROAD") exactly matched what
     bid4assets_scraper.py had already scraped for the same parcel.
+  - Monroe: id field (PARID) matches account_number exactly -- the same
+    county-run iasWorld layer pa_parcel_geocode.py's MONROE_SOURCE
+    already uses for geocoding, with a value split across two fields
+    (BLDGVALUE/LANDVALUE, summed) instead of one combined assessment
+    column -- see its own COUNTY_CONFIGS comment.
+  - Berks: id field (PROPID) matches account_number's first 14
+    characters -- Berks County's own GIS-published parcel layer, not PA
+    DEP's statewide one pa_parcel_geocode.py uses for Berks geocoding
+    (that one has no value field at all) -- see berks_first14()'s own
+    docstring.
 
 Adding another county means finding its own ArcGIS FeatureServer (search
 arcgis.com's public item search, e.g. "<county> County Pennsylvania
@@ -94,28 +104,94 @@ def strip_trailing_period(account_number: str) -> str:
     return account_number.strip().rstrip(".")
 
 
+def berks_first14(account_number: str) -> str:
+    """Bid4Assets' own Berks numbers are a 2-digit municipal code prepended
+    to a 12-digit parcel id (14 digits total), same shape
+    pa_parcel_geocode.py's berks_bid4assets_transform already documented
+    for DEP's layer -- but unlike DEP's PARCEL_ID (which stores the
+    12-digit id *without* that prefix), Berks County's own PROPID field
+    stores the full 14-digit id, prefix included, so this doesn't strip
+    it. A second, longer format (a 3-character sub-unit suffix appended,
+    e.g. "...T58") is handled by just taking the first 14 characters --
+    on a plain 14-digit id that's a no-op, so one function covers both
+    shapes. Verified against all 1,467 real Berks listings with no value
+    yet: 1,464 (99.8%) match this way."""
+    first14 = account_number.strip()[:14]
+    if first14.isdigit() and len(first14) == 14:
+        return first14
+    return account_number.strip()
+
+
 def strip_dashes(account_number: str) -> str:
     return account_number.replace("-", "").strip()
+
+
+def identity(account_number: str) -> str:
+    return account_number.strip()
 
 
 COUNTY_CONFIGS = {
     "Chester": {
         "query_url": "https://services.arcgis.com/G4S1dGvn7PIgYd6Y/arcgis/rest/services/Parcels_owners/FeatureServer/0/query",
         "id_field": "UPI",
-        "value_field": "TOT_ASSESS",
+        "value_fields": ("TOT_ASSESS",),
         "normalize_id": strip_trailing_period,
     },
     "Montgomery": {
         "query_url": "https://services1.arcgis.com/kOChldNuKsox8qZD/arcgis/rest/services/Montgomery_County_Parcels/FeatureServer/6/query",
         "id_field": "PARCEL",
-        "value_field": "TOTAL_ASSE",
+        "value_fields": ("TOTAL_ASSE",),
         "normalize_id": strip_dashes,
     },
     "Cumberland": {
         "query_url": "https://services1.arcgis.com/1Cfo0re3un0w6a30/arcgis/rest/services/Tax_Parcels/FeatureServer/0/query",
         "id_field": "PIN",
-        "value_field": "TOTAL_VAL",
+        "value_fields": ("TOTAL_VAL",),
         "normalize_id": strip_trailing_period,
+    },
+    # Same county-run iasWorld layer pa_parcel_geocode.py's MONROE_SOURCE
+    # already uses for geocoding (PARID matches bid4assets.com's scraped
+    # account_number directly, no transform needed -- 99% hit rate there
+    # against 1,439 real listings). That layer has no single combined
+    # assessment field like the other three counties' TOT_ASSESS/
+    # TOTAL_ASSE/TOTAL_VAL -- BLDGVALUE and LANDVALUE are separate columns
+    # instead, summed here into one assessed value before the same CLR
+    # conversion below. Verified directly against all 1,439 real
+    # ungeocoded-value Monroe listings before adding: 1,430 (99.4%) match
+    # with a positive summed value, same real-world range ($360-$60,350
+    # assessed) as the vacant/rural lots this county's tax sales are
+    # mostly made of. PREFVALUE (a "Clean & Green" preferential-use
+    # assessment some enrolled farmland/forest parcels carry instead of
+    # their fair-market one) came back 0 for every sampled row and isn't
+    # included -- BLDGVALUE/LANDVALUE is what these listings actually
+    # carry.
+    "Monroe": {
+        "query_url": "https://monroegis.org/webadaptor/rest/services/Tylers_IAS/Parcels_PublicView/MapServer/0/query",
+        "id_field": "PARID",
+        "value_fields": ("BLDGVALUE", "LANDVALUE"),
+        "normalize_id": identity,
+    },
+    # Berks County's own GIS department publishes this directly (found by
+    # searching ArcGIS Online for county-owned items, not PA DEP's
+    # statewide PA_Parcels layer pa_parcel_geocode.py uses for Berks
+    # geocoding -- that one has no value field at all, checked directly).
+    # An older "_Public" version of this same service (also turned up by
+    # that search) is retired/empty (returns 0 rows for any query) --
+    # deliberately not used here. VALUTOTAL is a raw base-year assessed
+    # total (same CLR treatment as every other county here, not already a
+    # market value) -- confirmed by its magnitude: the median matched raw
+    # VALUTOTAL among these listings is $42,850, which is an implausibly
+    # low median home value on its own but a plausible one once
+    # multiplied by Berks' 3.12 CLR factor (~$134k), and separately by
+    # this layer's schema itself carrying VALULAND/VALUBLDG/VALUTOTAL
+    # unmarked next to a distinctly-named VALULNDMKT ("land market")
+    # field -- i.e. the schema's own naming draws the same
+    # assessed-vs-market line CLR conversion exists to cross.
+    "Berks": {
+        "query_url": "https://services3.arcgis.com/dGYe1jDYrTw1wwpc/arcgis/rest/services/Berks_County_Parcels_V2/FeatureServer/2/query",
+        "id_field": "PROPID",
+        "value_fields": ("VALUTOTAL",),
+        "normalize_id": berks_first14,
     },
 }
 
@@ -130,13 +206,18 @@ def fetch_target_accounts(conn: combined_db.PgConnection, county: str) -> list[s
     return [r[0] for r in rows]
 
 
-def query_batch(query_url: str, id_field: str, value_field: str, ids: list[str]) -> dict[str, float]:
+def query_batch(query_url: str, id_field: str, value_fields: tuple[str, ...], ids: list[str]) -> dict[str, float]:
+    """value_fields is summed per feature -- most counties here have one
+    combined assessment column (a 1-tuple), but Monroe's layer splits it
+    across BLDGVALUE/LANDVALUE instead (see its own COUNTY_CONFIGS
+    comment), so this always sums rather than special-casing the
+    single-field counties."""
     quoted_ids = ",".join("'" + i.replace("'", "''") + "'" for i in ids)
     resp = requests.post(
         query_url,
         data={
             "where": f"{id_field} IN ({quoted_ids})",
-            "outFields": f"{id_field},{value_field}",
+            "outFields": f"{id_field}," + ",".join(value_fields),
             "f": "json",
         },
         headers=HEADERS, timeout=30,
@@ -149,7 +230,7 @@ def query_batch(query_url: str, id_field: str, value_field: str, ids: list[str])
     found = {}
     for feature in payload.get("features", []):
         attrs = feature["attributes"]
-        value = attrs.get(value_field)
+        value = sum(attrs.get(f) or 0 for f in value_fields)
         parcel_id = attrs.get(id_field)
         if value and value > 0 and parcel_id:
             # A parcel split across multiple map polygons appears as
@@ -180,7 +261,7 @@ def backfill_county(conn: combined_db.PgConnection, county: str) -> int:
     updated = 0
     for i in range(0, len(normalized_ids), BATCH_SIZE):
         chunk = normalized_ids[i:i + BATCH_SIZE]
-        values = query_batch(config["query_url"], config["id_field"], config["value_field"], chunk)
+        values = query_batch(config["query_url"], config["id_field"], config["value_fields"], chunk)
         for normalized_id, assessed_value in values.items():
             market_value = round(assessed_value * clr_factor, 2)
             for account_number in id_to_originals.get(normalized_id, []):
@@ -191,11 +272,64 @@ def backfill_county(conn: combined_db.PgConnection, county: str) -> int:
     return updated
 
 
+# Philadelphia isn't in COUNTY_CONFIGS/STATE_CLR_FACTORS above -- it's a
+# genuinely different case, not just another ArcGIS layer with its own
+# field names. It publishes its own assessor data (Office of Property
+# Assessment) through the city's Carto SQL API, not an ArcGIS
+# FeatureServer, and unlike every other county here, its market_value
+# field is *already* a real market value, not a fractional base-year
+# assessment -- Philadelphia moved to full-market-value assessment
+# (the "Actual Value Initiative") in 2013, which is also why
+# STATE_CLR_FACTORS above explicitly omits it ("has two different
+# factors depending on transaction date" -- that comment describes the
+# pre-AVI system; this project didn't scrape Philadelphia listings at
+# all when it was written, so it was never revisited). Applying a CLR
+# multiplier here would inflate an already-correct market value, not
+# correct an assessed one -- confirmed directly: the median matched
+# value among these listings is $149,350, itself a plausible Philadelphia
+# home value with no adjustment needed. id field (parcel_number) matches
+# account_number exactly -- verified against all 126 real Philadelphia
+# listings with no value yet: 124 (98.4%) matched.
+PHILADELPHIA_CARTO_URL = "https://phl.carto.com/api/v2/sql"
+
+
+def backfill_philadelphia(conn: combined_db.PgConnection) -> int:
+    target_accounts = fetch_target_accounts(conn, "Philadelphia")
+    print(f"Philadelphia: {len(target_accounts)} listing(s) currently have no estimated value.")
+    if not target_accounts:
+        return 0
+
+    updated = 0
+    for i in range(0, len(target_accounts), BATCH_SIZE):
+        chunk = target_accounts[i:i + BATCH_SIZE]
+        quoted_ids = ",".join("'" + a.replace("'", "''") + "'" for a in chunk)
+        resp = requests.get(
+            PHILADELPHIA_CARTO_URL,
+            params={"q": f"SELECT parcel_number, market_value FROM opa_properties_public "
+                          f"WHERE parcel_number IN ({quoted_ids})"},
+            headers=HEADERS, timeout=30,
+        )
+        resp.raise_for_status()
+        payload = resp.json()
+        if "error" in payload:
+            raise RuntimeError(f"Carto SQL API error: {payload['error']}")
+        for row in payload.get("rows", []):
+            value = row.get("market_value")
+            account_number = row.get("parcel_number")
+            if value and value > 0 and account_number:
+                combined_db.update_estimated_value(conn, "Philadelphia", account_number, str(value), state="PA")
+                updated += 1
+
+    print(f"Philadelphia: backfilled {updated} of {len(target_accounts)} listing(s).")
+    return updated
+
+
 def main():
     conn = combined_db.get_connection()
     total_updated = 0
     for county in COUNTY_CONFIGS:
         total_updated += backfill_county(conn, county)
+    total_updated += backfill_philadelphia(conn)
     conn.close()
     print(f"\n{total_updated} listing(s) total backfilled with an estimated value.")
 
