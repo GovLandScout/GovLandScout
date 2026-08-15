@@ -34,9 +34,16 @@ pipeline for it (see "Running it" below), not new code.
   month's value forward, since price_cut_pct is highly autocorrelated;
   predicting change forces it to actually explain movement instead (see
   Results below).
-- **Geography**: every county Zillow has price-cut data for, per state
-  -- 207 of 254 Texas counties, 66 of 67 Pennsylvania counties (PA's
-  coverage ratio is actually better; it's a much smaller state).
+- **Geography**: every county Zillow has price-cut data for, per state,
+  plus a ZHVI-decline gap-filler for counties it doesn't publish
+  price-cut data for at all (see "ZHVI gap-filler" below) -- **238 of
+  254 Texas counties** (203 price-cut + 35 gap-filler), **all 67 of 67
+  Pennsylvania counties** (64 price-cut + 3 gap-filler; PA's price-cut-only
+  ratio was already better before the gap-filler, being a much smaller
+  state). Price-cut-only coverage (203 TX, 64 PA as of this run) is down
+  slightly from an earlier version of this README's 207/66 -- confirmed
+  directly against Zillow's raw CSVs that this is real drift in Zillow's
+  own published coverage since then, not a regression introduced here.
 - **Features**: lagged/rolling price-cut history, ZHVI trend
   (month-over-month and year-over-year % change), for-sale inventory
   and its trend, county unemployment rate (from FRED) and its trend,
@@ -121,8 +128,14 @@ Each script takes a state key from `states.py` as its only CLI arg
    multi-hundred-county raw data, not something to commit) so re-runs
    don't re-hit either source.
 2. `build_dataset.py <state>` -- joins all of it into one county-month
-   panel for that state, engineers the lagged/rolling features described
-   above, and writes `data/{state}_county_month_dataset.csv`.
+   panel for that state (an outer join across ZHVI/price-cut/inventory,
+   not anchored on whichever dataset happens to have the narrowest
+   coverage -- see "ZHVI gap-filler" below for why that matters),
+   engineers the lagged/rolling features described above plus the
+   gap-filler's own ZHVI-decline target, and writes both
+   `data/{state}_county_month_dataset.csv` (the price-cut dataset) and
+   `data/{state}_county_month_dataset_zhvi.csv` (the broader-coverage
+   ZHVI gap-filler dataset).
 3. `train_model.py <state>` -- for each horizon, first a random search
    over both the random forest's and the gradient boosting's own
    hyperparameters (see "Hyperparameter search" below), then walk-forward
@@ -141,11 +154,21 @@ Each script takes a state key from `states.py` as its only CLI arg
    both regenerate together and `generate_predictions.py` needs them run
    in the same pass); only the `"gb"` half (`delta68`/`delta95`) is
    actually used in production, `"rf"` is kept for the comparison table's
-   own reference.
+   own reference. Then, if `data/{state}_county_month_dataset_zhvi.csv`
+   exists, repeats a leaner GB-only version of the same process for the
+   ZHVI gap-filler (see "ZHVI gap-filler" below for why it's
+   deliberately leaner), saving
+   `county_distress_model_{state}_{h}m_zhvi.joblib` and
+   `county_distress_calibration_{state}_zhvi.json`.
 4. `generate_predictions.py <state>` -- runs that state's three trained
-   horizon bundles against each county's latest available row, widens
-   each prediction's quantile interval by that horizon's calibration
-   deltas, and writes `public/{state}_county_predictions.json`.
+   price-cut horizon bundles against each county's latest available row,
+   widens each prediction's quantile interval by that horizon's
+   calibration deltas, then does the same against the ZHVI gap-filler
+   models but restricted to counties the price-cut pass didn't already
+   cover (`build_county_rows()`'s `only_counties` -- see "ZHVI
+   gap-filler" below), merges both into one list tagged with a `metric`
+   field (`"price_cut"` or `"zhvi_decline"`) per county, and writes
+   `public/{state}_county_predictions.json`.
 
 ## Publishing current predictions
 
@@ -265,36 +288,38 @@ models specifically at that horizon. See each state's Results section
 below for what tuning both sides across two passes changed about which
 model actually wins where.
 
-## Results: Texas (walk-forward cross-validation, 2026-08-12)
+## Results: Texas (walk-forward cross-validation, 2026-08-14)
 
-207 TX counties, ~15,500 county-month training examples spanning 2019-03
-through 2026-06. Evaluated on 4 rolling walk-forward folds per horizon
-(3-month test windows each, all in 2024-11 through 2026-05) rather than
-one fixed split -- see train_model.py's module docstring for why a
-single split understates how much performance actually varies month to
-month. RF and GB here each use their own horizon's winning config from
-"Hyperparameter search" above, not the old fixed defaults.
+203 TX counties with price-cut data, ~16,300 county-month training
+examples spanning 2019-03 through 2026-06 (see the Scope section above
+for why this is 203, not the 207 an earlier version of this README
+reported -- Zillow's own coverage drift, not a regression here).
+Evaluated on 4 rolling walk-forward folds per horizon (3-month test
+windows each, all in 2025-04 through 2026-05) rather than one fixed
+split -- see train_model.py's module docstring for why a single split
+understates how much performance actually varies month to month. RF and
+GB here each use their own horizon's winning config from "Hyperparameter
+search" above, not the old fixed defaults.
 
 | Horizon | Naive MAE | Linear MAE | RF MAE | GB MAE | RF vs. naive | Linear vs. naive | GB vs. naive |
 |---|---|---|---|---|---|---|---|
-| 1 month | 0.0162 ± 0.0013 | 0.0128 ± 0.0011 | 0.0129 ± 0.0004 | **0.0126 ± 0.0004** | 20.5% | 20.6% | **22.1%** |
-| 3 months | 0.0378 ± 0.0067 | 0.0249 ± 0.0011 | 0.0221 ± 0.0022 | **0.0218 ± 0.0026** | 41.5% | 34.0% | **42.4%** |
-| 6 months | 0.0505 ± 0.0059 | 0.0258 ± 0.0019 | 0.0269 ± 0.0087 | **0.0241 ± 0.0036** | 46.8% | 49.0% | **52.3%** |
+| 1 month | 0.0162 ± 0.0013 | 0.0128 ± 0.0010 | 0.0128 ± 0.0004 | **0.0126 ± 0.0005** | 20.7% | 20.8% | **22.3%** |
+| 3 months | 0.0378 ± 0.0067 | 0.0248 ± 0.0010 | 0.0220 ± 0.0023 | **0.0215 ± 0.0020** | 41.7% | 34.4% | **43.0%** |
+| 6 months | 0.0505 ± 0.0059 | 0.0256 ± 0.0018 | 0.0263 ± 0.0076 | **0.0236 ± 0.0034** | 47.9% | 49.3% | **53.3%** |
 
 (± is one standard deviation across the 4 folds -- how consistent each
 model's error was across different stretches of time, not the accuracy
-of a single number. These reflect the widened hyperparameter search's
-second pass -- see "Hyperparameter search" above for why RF moved
-slightly *backward* at 1 and 6 months here despite a more thorough
-search, and why that's expected random-search behavior, not a bug.)
+of a single number. These are a re-run of the same tuned pipeline
+(see "Hyperparameter search" above); the small shifts from the previous
+version of this table -- all well under one fold's own standard
+deviation -- come from Zillow's data having moved a couple more months
+forward between runs, not a methodology change.)
 
 **Gradient boosting wins outright at every horizon in Texas, and is now
 what `/market-trends` actually serves, not a comparison point held out
-of production for architectural reasons** -- 1 month held (GB 22.1% vs.
-RF's 20.5%, RF having given back the narrow lead it briefly held), and 6
-months widened noticeably (GB's second-pass tuning reached 52.3%, while
-RF's own second pass landed at 46.8%, slightly behind its own first-pass
-result). That's a real, fairly-earned result, not an artifact of only
+of production for architectural reasons** -- 1 month held (GB 22.3% vs.
+RF's 20.7%), and 6 months widened noticeably (GB reaching 53.3% vs. RF's
+47.9%). That's a real, fairly-earned result, not an artifact of only
 one side of the comparison getting attention -- both models went through
 the same two-pass search. Adopting GB required solving the uncertainty
 problem that had kept RF in production despite losing this comparison --
@@ -327,21 +352,20 @@ this replaced, see Scope's "Uncertainty" bullet and
   same conclusion as the RF-era table even though the underlying numbers
   aren't comparable.
 
-**Uncertainty calibration**: before applying any calibration, 56-66% of
-actual outcomes fall within the raw `[lower68, upper68]` quantile
-interval across the three horizons (target for a well-calibrated 68%
-interval: ~68%) -- overconfident, the same direction RF's raw tree-spread
-was (though RF's later, tuned version got closer to its own target than
-GB's raw interval does here). 89-93% land within the raw
+**Uncertainty calibration**: before applying any calibration, 66% (1
+month) down to 56-58% (3, 6 months) of actual outcomes fall within the
+raw `[lower68, upper68]` quantile interval (target for a well-calibrated
+68% interval: ~68%) -- overconfident at the longer horizons, the same
+direction RF's raw tree-spread was. 89-93% land within the raw
 `[lower95, upper95]` interval (target: ~95%), closer but still short.
 
 `train_model.py`'s `calibrate_gb_quantiles()` widens both edges of the
 interval by a delta fit on these same held-out walk-forward-CV residuals
 (Conformalized Quantile Regression -- see that function's own docstring),
 which by construction brings coverage on this data to exactly the target
-rate. Texas's fitted deltas: `delta68` of 0.0006 (1-month), 0.0051
+rate. Texas's fitted deltas: `delta68` of 0.0006 (1-month), 0.0048
 (3-month), 0.0055 (6-month) -- all small relative to the point estimates
-themselves, and `delta95` of 0.0024, 0.0102, 0.0115 respectively (roughly
+themselves, and `delta95` of 0.0025, 0.0099, 0.0121 respectively (roughly
 2-4x `delta68`, similar to RF's old `c95`/`c68` ratio staying near 2).
 `generate_predictions.py` applies both before writing the ± band
 `/market-trends` shows -- see `predict_with_interval()`'s own docstring
@@ -349,31 +373,35 @@ for how an asymmetric calibrated interval becomes the single symmetric ±
 number the UI actually draws (a real, documented simplification, not
 hidden away).
 
-## Results: Pennsylvania (walk-forward cross-validation, 2026-08-12)
+## Results: Pennsylvania (walk-forward cross-validation, 2026-08-14)
 
-66 PA counties, ~5,300-5,400 county-month training examples (fewer than
-Texas simply because Pennsylvania has far fewer counties -- 67 total vs.
-254), same 2019-03 through 2026-06 span and same 4-fold walk-forward
-setup. RF and GB here each use their own horizon's winning config from
-"Hyperparameter search" above, not the old fixed defaults.
+64 PA counties with price-cut data, ~5,300-5,700 county-month training
+examples (fewer than Texas simply because Pennsylvania has far fewer
+counties -- 67 total vs. 254; see the Scope section above for why 64,
+not the 66 an earlier version of this README reported), same 2019-03
+through 2026-06 span and same 4-fold walk-forward setup. RF and GB here
+each use their own horizon's winning config from "Hyperparameter search"
+above, not the old fixed defaults.
 
 | Horizon | Naive MAE | Linear MAE | RF MAE | GB MAE | RF vs. naive | Linear vs. naive | GB vs. naive |
 |---|---|---|---|---|---|---|---|
-| 1 month | 0.0184 ± 0.0028 | 0.0118 ± 0.0004 | 0.0125 ± 0.0005 | 0.0120 ± 0.0003 | 32.1% | **35.7%** | 34.8% |
-| 3 months | 0.0379 ± 0.0032 | 0.0232 ± 0.0020 | 0.0217 ± 0.0010 | 0.0211 ± 0.0016 | 42.9% | 38.9% | **44.3%** |
-| 6 months | 0.0518 ± 0.0151 | 0.0224 ± 0.0010 | 0.0235 ± 0.0020 | 0.0220 ± 0.0029 | 54.6% | 56.7% | **57.5%** |
+| 1 month | 0.0184 ± 0.0028 | 0.0118 ± 0.0004 | 0.0124 ± 0.0005 | 0.0121 ± 0.0003 | 32.6% | **35.9%** | 34.5% |
+| 3 months | 0.0379 ± 0.0032 | 0.0226 ± 0.0014 | 0.0216 ± 0.0009 | 0.0208 ± 0.0012 | 43.2% | 40.3% | **45.3%** |
+| 6 months | 0.0518 ± 0.0151 | 0.0217 ± 0.0003 | 0.0222 ± 0.0016 | 0.0216 ± 0.0020 | 57.1% | 58.2% | **58.4%** |
 
 **Gradient boosting doesn't win outright in Pennsylvania -- linear
-regression still wins at 1 month (35.7% vs. GB's 34.8%)** -- but it's the
+regression still wins at 1 month (35.9% vs. GB's 34.5%)** -- but it's the
 production model here too, the same as Texas, for consistency (one
 pipeline, one production model class per horizon across both states, not
 a per-horizon "whichever wins" selection this project has never done for
-any other model). GB does win clearly at 3 and 6 months (44.3%, 57.5%).
-With a third as many counties and a smaller, more geographically compact
-state, PA's 6-month fold error is also still the least consistent of any
-horizon/state combination here (± up to 0.0151) -- a smaller, noisier
-dataset remains a plausible reason the more flexible models have a harder
-time earning their extra complexity back here specifically.
+any other model). GB does win clearly at 3 and 6 months (45.3%, 58.4%,
+the latter a much tighter margin over RF/linear than the earlier version
+of this table showed). With a third as many counties and a smaller, more
+geographically compact state, PA's 6-month fold error is also still the
+least consistent of any horizon/state combination here (± up to 0.0151)
+-- a smaller, noisier dataset remains a plausible reason the more
+flexible models have a harder time earning their extra complexity back
+here specifically.
 
 Feature importances (permutation MAE-increase on the production mean
 model -- see the Texas section above for why these aren't comparable to
@@ -388,22 +416,167 @@ the old RF-era percentages):
 - `mortgage_rate` is a consistent, if secondary, presence (3rd-4th ranked
   at every horizon, 0.0018-0.0074), similar magnitude to Texas.
 
-**Uncertainty calibration**: before applying any calibration, 47-55% of
+**Uncertainty calibration**: before applying any calibration, 48-54% of
 actual outcomes fall within the raw `[lower68, upper68]` quantile
 interval (target ~68%) -- more overconfident than Texas's own raw
-interval, and 80-82% within `[lower95, upper95]` (target ~95%), also
+interval, and 77-85% within `[lower95, upper95]` (target ~95%), also
 further short. Pennsylvania's smaller, noisier dataset (see the 6-month
 fold-consistency point above) is a plausible reason its raw quantile
 models fit the tails less precisely than Texas's.
 
 `calibrate_gb_quantiles()` widens Pennsylvania's interval more than
 Texas's needed, consistent with the larger raw-coverage gap above --
-`delta68` of 0.0051 (1-month), 0.0062 (3-month), 0.0073 (6-month), and
-`delta95` of 0.0110, 0.0166, 0.0171 (roughly 2-2.5x `delta68`, similar
-ratio to Texas's). `generate_predictions.py` applies these the same way
-as Texas's -- a real, if larger, calibration fix, following the same
-"widen the raw interval by a delta fit on held-out data" logic
-throughout this section.
+`delta68` of 0.0046 (1-month), 0.0085 (3-month), 0.0064 (6-month), and
+`delta95` of 0.0109, 0.0202, 0.0176 respectively (roughly 2-2.5x
+`delta68`, similar ratio to Texas's). `generate_predictions.py` applies
+these the same way as Texas's -- a real, if larger, calibration fix,
+following the same "widen the raw interval by a delta fit on held-out
+data" logic throughout this section.
+
+## ZHVI gap-filler
+
+Zillow's own `price_cut_county.csv` methodology excludes a real chunk of
+small/rural counties outright -- 51 of Texas's 254 counties have no
+price-cut data at all, ever, at any date (Pennsylvania's gap is much
+smaller: 3 of 67). That's not a scraping or pipeline problem to fix,
+it's a real hole in the source data this model has always been built
+on. Rather than leave those counties permanently off the map, or swap
+the whole model's target to a broader-but-coarser metric everywhere
+(rejected -- it would have thrown away the price-cut model's real,
+demonstrated edge over naive/linear at every horizon in both states, see
+Results above), this adds a second, narrower model that only fills in
+the specific counties the first one can't reach.
+
+**The gap-filler's target**: `target_zhvi_decline_{h}m` in
+`build_dataset.py`'s `engineer_features()`, defined as
+`-(zhvi_mom_pct.shift(-h) - zhvi_mom_pct)` -- the *decline* in ZHVI's own
+month-over-month growth rate, negated so positive still means "more
+distress" the same direction as the price-cut target, for one consistent
+red/green convention on the map (see web.py's `distressColor()`, unchanged
+by any of this). ZHVI (Zillow's home value index) is published far more
+broadly than the price-cut series -- this is a proxy for "is the local
+market cooling," not a direct read of seller behavior the way price-cut
+share is, which is exactly why it's kept as a fallback rather than the
+primary signal.
+
+**Feature set**: `ZHVI_FEATURE_COLS` in `build_dataset.py`/`train_model.py`/
+`generate_predictions.py` (kept as three separate copies, same reasoning
+as this project's existing duplicated constants elsewhere) drops
+`unemployment_rate`/`unemployment_rate_mom_change` from the primary
+model's feature list -- a deliberate coverage trade, not an oversight.
+FRED simply has no unemployment series at all for many small rural
+counties (confirmed directly: Motley County, TX has zero
+`unemployment_rate` rows despite full ZHVI/inventory data). Verified via
+a direct A/B on the same build: keeping those two features in caps TX's
+ZHVI dataset at 207 counties (matching FRED's own unemployment
+coverage); dropping them raises it to all 238 the merged output actually
+ships. Unemployment was already the least-important feature block in
+every price-cut Results table above, so this is trading away a
+consistently marginal signal for real coverage, not a costly one.
+
+**Merge logic**: `build_dataset.py` writes the gap-filler's own dataset
+to `data/{state}_county_month_dataset_zhvi.csv` alongside the existing
+price-cut one (an outer join across ZHVI/price-cut/inventory now, not
+anchored on price-cut's own narrower set -- otherwise counties missing
+price-cut data would have been silently dropped before the gap-filler
+ever got a chance to compute features for them). `train_model.py`'s
+`train_zhvi_gap_filler()` trains it the same way as the primary model,
+just leaner (see below), saving
+`county_distress_model_{state}_{h}m_zhvi.joblib` and
+`county_distress_calibration_{state}_zhvi.json` alongside the existing
+files. `generate_predictions.py`'s `build_county_rows()` runs the
+price-cut pass first, then the gap-filler pass restricted to counties
+the price-cut pass didn't already produce a row for (`only_counties` --
+price-cut is the more directly relevant signal everywhere Zillow
+publishes it, not a second opinion competing with it), and merges both
+into one list, each row tagged `"metric": "price_cut"` or
+`"metric": "zhvi_decline"` with a metric-agnostic `current_value` field
+in place of the old `current_price_cut_pct`.
+
+**Deliberately leaner evaluation**: `evaluate_gb_fold()`/
+`cross_validate_gb()` in `train_model.py` run gradient boosting only --
+naive baseline and GB, no random forest, no linear regression. The
+RF-vs-GB question this simplification skips was already settled for the
+primary model (see "Hyperparameter search" and both Results sections
+above); the gap-filler's whole job is coverage, not re-earning that same
+comparison a second time on a narrower, noisier proxy target. Everything
+else -- walk-forward CV, random hyperparameter search over GB's own
+space, quantile regression at the same `GB_QUANTILES`, Conformalized
+Quantile Regression calibration -- is identical machinery to the primary
+model, just not run through RF/linear at all.
+
+**Results, Texas** (35 gap-filler counties, on top of the 203 price-cut
+ones -- 238 of 254 total):
+
+| Horizon | Naive MAE | GB MAE | GB vs. naive | Raw 68%/95% coverage | delta68 | delta95 |
+|---|---|---|---|---|---|---|
+| 1 month | 0.3129 | 0.3170 | **-1.3%** | 69% / 95% | -0.0087 | 0.0045 |
+| 3 months | 0.7079 | 0.5908 | **16.5%** | 68% / 94% | 0.0041 | 0.0546 |
+| 6 months | 0.8751 | 0.6087 | **30.4%** | 62% / 93% | 0.0872 | 0.1350 |
+
+**Texas's 1-month gap-filler is honestly close to a wash against naive
+(-1.3%)** -- reported as-is, not hidden, the same "checked, not just
+asserted" standard the price-cut model's own calibration is held to
+above. ZHVI's own month-over-month growth rate is a noisier, more
+proxy-once-removed signal than price-cut share at short horizons, and
+that shows up directly in the point-estimate accuracy here. The raw 68%
+interval was already essentially at its 69% target before any
+correction, though, which is *why* `delta68` comes out slightly
+negative (a small narrowing, not a widening) -- `predict_with_interval()`
+in `generate_predictions.py` already handles a negative delta safely
+with plain arithmetic, no special-casing needed (verified directly).
+3 and 6 months are real, clear wins over naive (16.5%, 30.4%) -- close
+to the price-cut model's own longer-horizon margins. Feature importances
+flip a striking pattern relative to the price-cut model: `mortgage_rate`
+edges out `zhvi_mom_pct` itself at 1 month (0.0373 vs. 0.0286), then
+`zhvi_mom_pct` pulls sharply ahead at 3 and 6 months (0.3327, 0.4924 --
+each easily the single largest feature by that point). `price_cut_pct`'s
+roll3-dominated story above doesn't repeat here because it isn't in this
+feature set at all.
+
+**Results, Pennsylvania** (3 gap-filler counties -- Cameron, Fulton,
+Sullivan -- on top of the 64 price-cut ones, for **all 67 of 67 total**):
+
+| Horizon | Naive MAE | GB MAE | GB vs. naive | Raw 68%/95% coverage | delta68 | delta95 |
+|---|---|---|---|---|---|---|
+| 1 month | 0.2368 | 0.2294 | **3.1%** | 70% / 96% | -0.0156 | -0.0435 |
+| 3 months | 0.4797 | 0.3599 | **25.0%** | 75% / 95% | -0.0602 | -0.0771 |
+| 6 months | 0.5026 | 0.3506 | **30.2%** | 74% / 95% | -0.0467 | 0.0266 |
+
+Pennsylvania's gap-filler beats naive at every horizon, unlike Texas's
+1-month result -- plausibly just that Cameron/Fulton/Sullivan happen to
+be less noisy than Texas's 35, on a sample this small (3 counties) that
+could easily be variance rather than a real state-level difference,
+which is why this isn't claimed as one. **The calibration deltas are the
+more interesting difference**: nearly every one is negative here, the
+opposite pattern from Texas's mostly-positive deltas -- raw coverage
+(70-75%/95-96%) is already *at or above* every target here, so
+`calibrate_gb_quantiles()` correctly *narrows* the raw interval instead
+of widening it. Same function, same "fit a delta on held-out CV
+residuals" logic as everywhere else in this document; it just happens
+that Pennsylvania's raw quantile fit here is already slightly
+over-cautious rather than overconfident, and the calibration corrects in
+whichever direction the data actually calls for -- not a asymmetry the
+code treats specially, see `predict_with_interval()`'s plain
+`lower - delta` / `upper + delta` arithmetic. Feature importances follow
+the same mortgage-rate-then-ZHVI shape as Texas: `mortgage_rate` leads at
+1 month (0.0386 vs. `zhvi_mom_pct`'s 0.0277), `zhvi_mom_pct` takes over
+decisively by 6 months (0.5221).
+
+**Surfaced honestly, not blended in**: gap-filled counties are a
+genuinely different observation (home-value growth trend, not seller
+price-cut behavior) on a genuinely different numeric scale, so
+`/market-trends` doesn't just drop them into the existing choropleth as
+if they were more price-cut data. `web.py`'s `renderChoropleth()`
+computes separate `maxAbs`/`maxStd` color-scale normalization per
+`metric` group (mixing scales into one linear color intensity would make
+one group look artificially muted or extreme next to the other), draws
+gap-filled counties with a dashed, darker county border, and both the
+map tooltip and the county detail panel show an explicit "estimated from
+home values, no price-cut data" disclosure alongside a metric-appropriate
+label ("Current home-value growth rate" instead of "Current price-cut
+share") -- the same kind of plain-language honesty this model's
+uncertainty bands are already held to.
 
 ## Case study: Clay County
 

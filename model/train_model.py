@@ -121,6 +121,42 @@ FEATURE_COLS = [
     "month_sin", "month_cos",
 ]
 
+# Same feature set build_dataset.py's ZHVI_FEATURE_COLS defines -- kept as
+# a separate copy rather than importing it from there, same reasoning as
+# duplicating predict_with_uncertainty() already established in this
+# project: this module needing its own copy of a constant used to check
+# something (here, "does the gap-filler's own feature set line up with
+# what the dataset it's loading actually has") isn't the same job as the
+# module that defines it for a different reason (there, building the
+# dataset in the first place).
+ZHVI_FEATURE_COLS = [
+    "zhvi_mom_pct", "zhvi_yoy_pct", "inventory_mom_pct", "inventory_level",
+    "mortgage_rate", "mortgage_rate_mom_change",
+    "month_sin", "month_cos",
+]
+
+# Everything a caller needs to run either model through main() -- which
+# dataset file, which feature set, what the target columns are prefixed
+# with, and how its output files are named. "zhvi" isn't a second
+# from-scratch model built with the same rigor as "price_cut" (no RF-vs-
+# GB comparison, no separate hyperparameter search history spanning two
+# tuning passes -- see module docstring) -- it exists specifically to
+# cover the ~35 TX / handful of PA counties Zillow never publishes
+# price_cut_pct for at all (see build_dataset.py's build_panel() for why
+# that gap exists), reusing GB's already-settled architecture rather than
+# re-litigating which model wins for a second target nobody's asked
+# whether RF would do better on.
+METRICS = {
+    "price_cut": {
+        "dataset_suffix": "", "target_prefix": "target_change",
+        "feature_cols": FEATURE_COLS, "file_suffix": "",
+    },
+    "zhvi": {
+        "dataset_suffix": "_zhvi", "target_prefix": "target_zhvi_decline",
+        "feature_cols": ZHVI_FEATURE_COLS, "file_suffix": "_zhvi",
+    },
+}
+
 
 # The hand-picked config every RF fit used before random_search_rf()
 # existed -- also candidate zero in every search below, so tuning can
@@ -383,12 +419,16 @@ def random_search_rf(dataset: pd.DataFrame, horizon: int, n_iter: int = RANDOM_S
     return {"best": results[0], "baseline": baseline, "all": results}
 
 
-def random_search_gb(dataset: pd.DataFrame, horizon: int, n_iter: int = RANDOM_SEARCH_ITER) -> dict:
+def random_search_gb(
+    dataset: pd.DataFrame, target_col: str, n_iter: int = RANDOM_SEARCH_ITER,
+    feature_cols: list[str] = FEATURE_COLS,
+) -> dict:
     """Same approach as random_search_rf() (see its own docstring for why
     this is hand-rolled instead of sklearn's RandomizedSearchCV), applied
     to GB_SEARCH_SPACE instead: only fits gradient boosting per candidate,
-    not the random forest or linear regression too."""
-    target_col = f"target_change_{horizon}m"
+    not the random forest or linear regression too. target_col/feature_cols
+    default to the price-cut model's own -- main() passes the ZHVI gap-
+    filler's instead when running that metric (see METRICS)."""
     usable = dataset.dropna(subset=[target_col])
     months = sorted(usable["year_month"].unique())
     folds = walk_forward_folds(months, N_CV_FOLDS, CV_TEST_WINDOW_MONTHS)
@@ -404,8 +444,8 @@ def random_search_gb(dataset: pd.DataFrame, horizon: int, n_iter: int = RANDOM_S
             test_df = usable[usable["year_month"].isin(test_months)]
             if train_df.empty or test_df.empty:
                 continue
-            X_train, y_train = train_df[FEATURE_COLS], train_df[target_col]
-            X_test, y_test = test_df[FEATURE_COLS], test_df[target_col]
+            X_train, y_train = train_df[feature_cols], train_df[target_col]
+            X_test, y_test = test_df[feature_cols], test_df[target_col]
             gb = make_gradient_boosting(params)
             gb.fit(X_train, y_train)
             fold_maes.append(mean_absolute_error(y_test, gb.predict(X_test)))
@@ -417,6 +457,66 @@ def random_search_gb(dataset: pd.DataFrame, horizon: int, n_iter: int = RANDOM_S
     results.sort(key=lambda r: r["mean_mae"])
     baseline = next(r for r in results if r["params"] == DEFAULT_GB_PARAMS)
     return {"best": results[0], "baseline": baseline, "all": results}
+
+
+def evaluate_gb_fold(
+    train_df: pd.DataFrame, test_df: pd.DataFrame, target_col: str,
+    feature_cols: list[str], gb_params: dict | None = None,
+) -> dict:
+    """Leaner sibling of evaluate_fold() above, for the ZHVI gap-filler
+    (see METRICS): naive baseline and GB's own mean+quantile models only,
+    no RF and no LR comparison. Not because those wouldn't be informative
+    here too, but because this model's whole reason to exist is covering
+    counties the primary model can't reach, not re-earning the RF-vs-GB
+    comparison the primary model already settled across two real tuning
+    passes (see module docstring) -- see model/README.md's "Next steps"
+    for this being a documented, deliberate scope choice, not an
+    oversight."""
+    X_train, y_train = train_df[feature_cols], train_df[target_col]
+    X_test, y_test = test_df[feature_cols], test_df[target_col]
+
+    naive_mae = mean_absolute_error(y_test, pd.Series(0.0, index=y_test.index))
+
+    gb = make_gradient_boosting(gb_params)
+    gb.fit(X_train, y_train)
+    gb_mae = mean_absolute_error(y_test, gb.predict(X_test))
+
+    gb_quantile_preds = {
+        name: make_gb_quantile_model(q, gb_params).fit(X_train, y_train).predict(X_test)
+        for name, q in GB_QUANTILES.items()
+    }
+    gb_score_68 = np.maximum(
+        gb_quantile_preds["lower68"] - y_test.to_numpy(), y_test.to_numpy() - gb_quantile_preds["upper68"]
+    )
+    gb_score_95 = np.maximum(
+        gb_quantile_preds["lower95"] - y_test.to_numpy(), y_test.to_numpy() - gb_quantile_preds["upper95"]
+    )
+
+    return {
+        "naive_mae": naive_mae, "gb_mae": gb_mae,
+        "gb_coverage_68": float(np.mean(gb_score_68 <= 0)),
+        "gb_coverage_95": float(np.mean(gb_score_95 <= 0)),
+        "test_rows": len(test_df),
+        "gb_score_68": gb_score_68, "gb_score_95": gb_score_95,
+    }
+
+
+def cross_validate_gb(
+    dataset: pd.DataFrame, target_col: str, feature_cols: list[str], gb_params: dict | None = None,
+) -> list[dict]:
+    usable = dataset.dropna(subset=[target_col])
+    months = sorted(usable["year_month"].unique())
+
+    fold_results = []
+    for train_months, test_months in walk_forward_folds(months, N_CV_FOLDS, CV_TEST_WINDOW_MONTHS):
+        train_df = usable[usable["year_month"].isin(train_months)]
+        test_df = usable[usable["year_month"].isin(test_months)]
+        if train_df.empty or test_df.empty:
+            continue
+        result = evaluate_gb_fold(train_df, test_df, target_col, feature_cols, gb_params)
+        result["test_range"] = f"{test_months[0]}..{test_months[-1]}"
+        fold_results.append(result)
+    return fold_results
 
 
 def calibrate_uncertainty(fold_results: list[dict]) -> dict:
@@ -475,17 +575,21 @@ def calibrate_gb_quantiles(fold_results: list[dict]) -> dict:
 
 
 def fit_gb_production_model(
-    dataset: pd.DataFrame, horizon: int, state_key: str, gb_params: dict | None = None,
+    dataset: pd.DataFrame, horizon: int, state_key: str, target_col: str,
+    feature_cols: list[str] = FEATURE_COLS, file_suffix: str = "", gb_params: dict | None = None,
 ) -> dict:
     """The model generate_predictions.py actually uses -- one mean-loss GB
     plus four quantile-loss GB (see GB_QUANTILES), all trained on every
     row available, not held back from a test split, since there's no
     accuracy claim being protected here, just the best model deployable
     today. Bundled into one dict/joblib file per horizon rather than five
-    separate files -- they're only ever loaded and used together."""
-    target_col = f"target_change_{horizon}m"
+    separate files -- they're only ever loaded and used together.
+    file_suffix distinguishes the ZHVI gap-filler's own model files from
+    the price-cut model's (see METRICS) -- empty string reproduces the
+    original filename exactly, so the default price-cut call site is
+    unaffected."""
     usable = dataset.dropna(subset=[target_col])
-    X, y = usable[FEATURE_COLS], usable[target_col]
+    X, y = usable[feature_cols], usable[target_col]
 
     mean_model = make_gradient_boosting(gb_params)
     mean_model.fit(X, y)
@@ -493,7 +597,7 @@ def fit_gb_production_model(
     for name, q in GB_QUANTILES.items():
         models[name] = make_gb_quantile_model(q, gb_params).fit(X, y)
 
-    model_path = Path(__file__).parent / f"county_distress_model_{state_key}_{horizon}m.joblib"
+    model_path = Path(__file__).parent / f"county_distress_model_{state_key}_{horizon}m{file_suffix}.joblib"
     joblib.dump(models, model_path)
 
     # permutation_importance, not feature_importances_ -- HistGradientBoostingRegressor
@@ -509,7 +613,7 @@ def fit_gb_production_model(
     importance_result = permutation_importance(
         mean_model, X, y, n_repeats=5, random_state=42, scoring="neg_mean_absolute_error",
     )
-    importances = pd.Series(importance_result.importances_mean, index=FEATURE_COLS).sort_values(ascending=False)
+    importances = pd.Series(importance_result.importances_mean, index=feature_cols).sort_values(ascending=False)
 
     return {"rows": len(usable), "importances": importances, "model_path": model_path}
 
@@ -517,6 +621,78 @@ def fit_gb_production_model(
 def summarize(fold_results: list[dict], key: str) -> tuple[float, float]:
     values = pd.Series([r[key] for r in fold_results])
     return values.mean(), values.std()
+
+
+def train_zhvi_gap_filler(state_key: str, state_name: str) -> None:
+    """The ZHVI-decline gap-filler (see METRICS, build_dataset.py's
+    build_panel()): a separate, leaner pass -- naive baseline + tuned GB
+    only, via random_search_gb()/cross_validate_gb()/evaluate_gb_fold(),
+    not the full RF-vs-LR-vs-GB comparison the price-cut model earns
+    (see evaluate_gb_fold()'s own docstring for why that's deliberate).
+    Writes its own model/calibration files (file_suffix="_zhvi") so
+    generate_predictions.py can load both per state without either
+    overwriting the other."""
+    metric = METRICS["zhvi"]
+    dataset_path = DATA_DIR / f"{state_key}_county_month_dataset{metric['dataset_suffix']}.csv"
+    if not dataset_path.exists():
+        print(f"\n(No {dataset_path.name} found -- skipping the ZHVI gap-filler for this state. "
+              f"Run build_dataset.py {state_key} first if you want it.)")
+        return
+
+    dataset = pd.read_csv(dataset_path)
+    dataset["year_month"] = pd.PeriodIndex(dataset["year_month"], freq="M")
+    feature_cols = metric["feature_cols"]
+
+    calibration_by_horizon = {}
+    for horizon in TARGET_HORIZONS:
+        print(f"\n{'-' * 60}\n{state_name.upper()} -- ZHVI GAP-FILLER -- {horizon}-MONTH HORIZON\n{'-' * 60}")
+        target_col = f"{metric['target_prefix']}_{horizon}m"
+
+        gb_search = random_search_gb(dataset, target_col, feature_cols=feature_cols)
+        gb_best, gb_baseline = gb_search["best"], gb_search["baseline"]
+        if gb_best["params"] == gb_baseline["params"]:
+            print(f"Random search over {RANDOM_SEARCH_ITER} GB candidate(s): the hand-picked default "
+                  f"{DEFAULT_GB_PARAMS} was already the best of them (MAE {gb_best['mean_mae']:.4f}).")
+        else:
+            print(f"Random search over {RANDOM_SEARCH_ITER} GB candidate(s): {gb_best['params']} "
+                  f"reached MAE {gb_best['mean_mae']:.4f}±{gb_best['std_mae']:.4f}, vs. the hand-picked default's "
+                  f"{gb_baseline['mean_mae']:.4f}±{gb_baseline['std_mae']:.4f} "
+                  f"({1 - gb_best['mean_mae'] / gb_baseline['mean_mae']:.1%} lower).")
+        gb_params = gb_best["params"]
+
+        folds = cross_validate_gb(dataset, target_col, feature_cols, gb_params)
+        naive_mean, _ = summarize(folds, "naive_mae")
+        gb_mean, _ = summarize(folds, "gb_mae")
+        print(f"GB beats naive by {1 - gb_mean / naive_mean:.1%} on average across "
+              f"{len(folds)} walk-forward folds (naive MAE {naive_mean:.4f}, GB MAE {gb_mean:.4f}).")
+
+        gb_cov68_mean, _ = summarize(folds, "gb_coverage_68")
+        gb_cov95_mean, _ = summarize(folds, "gb_coverage_95")
+        print(f"Raw quantile interval, before calibration: {gb_cov68_mean:.0%} coverage at 68% target, "
+              f"{gb_cov95_mean:.0%} at 95% target.")
+
+        gb_calibration = calibrate_gb_quantiles(folds)
+        scores_68, scores_95 = gb_calibration.pop("scores_68"), gb_calibration.pop("scores_95")
+        cov68_after = float(np.mean(scores_68 <= gb_calibration["delta68"]))
+        cov95_after = float(np.mean(scores_95 <= gb_calibration["delta95"]))
+        print(f"Calibration deltas fit on {gb_calibration['n']:,} held-out CV rows: "
+              f"delta68={gb_calibration['delta68']:.4f}, delta95={gb_calibration['delta95']:.4f} "
+              f"-- {cov68_after:.0%}/{cov95_after:.0%} coverage by construction.")
+        calibration_by_horizon[horizon] = {"gb": gb_calibration}
+
+        production = fit_gb_production_model(
+            dataset, horizon, state_key, target_col,
+            feature_cols=feature_cols, file_suffix=metric["file_suffix"], gb_params=gb_params,
+        )
+        print(f"Production model trained on all {production['rows']:,} available rows "
+              f"(saved to {production['model_path'].name}).")
+        print("Feature importances (permutation MAE-increase):")
+        for feature, importance in production["importances"].items():
+            print(f"  {feature:<32} {importance:.4f}")
+
+    calibration_path = Path(__file__).parent / f"county_distress_calibration_{state_key}_zhvi.json"
+    calibration_path.write_text(json.dumps(calibration_by_horizon, indent=2))
+    print(f"\nSaved ZHVI gap-filler calibration factors to {calibration_path.name}.")
 
 
 def main():
@@ -542,7 +718,7 @@ def main():
                   f"({1 - best['mean_mae'] / baseline['mean_mae']:.1%} lower) -- used for every RF fit below.")
         rf_params = best["params"]
 
-        gb_search = random_search_gb(dataset, horizon)
+        gb_search = random_search_gb(dataset, f"target_change_{horizon}m")
         gb_best, gb_baseline = gb_search["best"], gb_search["baseline"]
         if gb_best["params"] == gb_baseline["params"]:
             print(f"Random search over {RANDOM_SEARCH_ITER} GB candidate(s): the hand-picked default "
@@ -602,7 +778,7 @@ def main():
               f"non-circular check rather than a fit-your-own-test-set number).")
         calibration_by_horizon[horizon] = {"rf": rf_calibration, "gb": gb_calibration}
 
-        production = fit_gb_production_model(dataset, horizon, state_key, gb_params)
+        production = fit_gb_production_model(dataset, horizon, state_key, f"target_change_{horizon}m", gb_params=gb_params)
         print(f"\nProduction model (gradient boosting, mean + 4 quantile) trained on all "
               f"{production['rows']:,} available rows (saved to {production['model_path'].name}).")
         print("Feature importances (permutation MAE-increase, mean model only -- see module docstring):")
@@ -614,6 +790,8 @@ def main():
     print(f"\nSaved uncertainty calibration factors to {calibration_path.name} "
           f"(generate_predictions.py applies gb.delta68/delta95 to widen the shipped ± band; "
           f"rf.c68/c95 kept for reference only, no longer used in production).")
+
+    train_zhvi_gap_filler(state_key, state["name"])
 
 
 if __name__ == "__main__":

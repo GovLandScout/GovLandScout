@@ -14,6 +14,16 @@ merging, using year-month rather than the exact date since Zillow
 stamps month-*end* dates ("2018-03-31") and FRED stamps month-*start*
 ("2018-03-01") for what's conceptually the same observation period.
 
+Writes two output datasets, not one: `{state}_county_month_dataset.csv`
+(unchanged -- the original price-cut-share model, 207 of 254 TX counties
+/ 66 of 67 PA ones, whatever Zillow itself publishes price-cut data for)
+and `{state}_county_month_dataset_zhvi.csv` (a gap-filler covering every
+county Zillow has ZHVI data for instead -- 243 TX / 67 PA, all but the
+handful its price-cut coverage doesn't reach). See engineer_features()
+and build_panel()'s own comments for why price-cut coverage is narrower
+in the first place and how the second dataset fills the gap without
+touching the first.
+
 Run with a state key from states.py as the only CLI arg, e.g.
 `python3 build_dataset.py pa` (defaults to tx).
 """
@@ -63,14 +73,28 @@ def load_mortgage_rate() -> pd.DataFrame:
 
 
 def build_panel(state_key: str, state_abbrev: str) -> pd.DataFrame:
+    """
+    Outer-joins ZHVI/price-cut/inventory rather than anchoring on one of
+    them -- confirmed directly against the raw CSVs before writing this:
+    Zillow publishes ZHVI and inventory for 243 of 254 TX counties but
+    price-cut share for only 208 (the ~35 missing are recognizably its
+    smallest, most rural counties -- evidently below whatever minimum
+    active-listing volume Zillow needs to publish a stable price-cut
+    figure at all, not a gap in what this project fetches). Anchoring on
+    price_cut here (the old behavior) silently dropped every one of those
+    ZHVI-covered counties from the panel before engineer_features() ever
+    ran. Outer-joining keeps them in the panel; engineer_features() below
+    is what actually decides which output dataset(s) a given county ends
+    up usable for, based on which columns it has real data in.
+    """
     zhvi = load_wide_zillow("zhvi_county.csv", "zhvi", state_abbrev)
     price_cut = load_wide_zillow("price_cut_county.csv", "price_cut_pct", state_abbrev)
     inventory = load_wide_zillow("inventory_county.csv", "inventory", state_abbrev)
     unemployment = load_unemployment(state_key)
     mortgage_rate = load_mortgage_rate()
 
-    panel = price_cut.merge(zhvi, on=["RegionName", "year_month"], how="left")
-    panel = panel.merge(inventory, on=["RegionName", "year_month"], how="left")
+    panel = zhvi.merge(price_cut, on=["RegionName", "year_month"], how="outer")
+    panel = panel.merge(inventory, on=["RegionName", "year_month"], how="outer")
     panel = panel.merge(unemployment, on=["RegionName", "year_month"], how="left")
     # year_month only, not RegionName -- every county in the state shares
     # the same national mortgage rate for a given month, unlike the
@@ -79,20 +103,68 @@ def build_panel(state_key: str, state_abbrev: str) -> pd.DataFrame:
     return panel.sort_values(["RegionName", "year_month"]).reset_index(drop=True)
 
 
-def engineer_features(panel: pd.DataFrame) -> pd.DataFrame:
+# The price-cut model's original 15 features -- unchanged from before the
+# ZHVI gap-filler existed, still what county_month_dataset.csv's own 207
+# (TX) / 66 (PA) counties train on.
+PRICE_CUT_FEATURE_COLS = [
+    "price_cut_pct", "price_cut_pct_lag1", "price_cut_pct_lag3", "price_cut_pct_lag6",
+    "price_cut_pct_roll3", "zhvi_mom_pct", "zhvi_yoy_pct", "inventory_mom_pct",
+    "inventory_level", "unemployment_rate", "unemployment_rate_mom_change",
+    "mortgage_rate", "mortgage_rate_mom_change",
+    "month_sin", "month_cos",
+]
+
+# Everything price_cut_pct-derived removed -- the whole reason this
+# feature set exists is to cover counties Zillow never publishes
+# price_cut_pct for at all (see build_panel()'s own comment), so
+# requiring those columns would defeat the purpose immediately.
+#
+# unemployment_rate/unemployment_rate_mom_change removed too, for the
+# same reason but a different data source: FRED's own county-level
+# employment/labor-force series (see fetch_data.py's
+# fetch_county_unemployment(), which unemployment_rate is derived from)
+# simply doesn't exist for many of the same small, rural counties Zillow
+# skips for price_cut_pct -- confirmed directly on Motley County, TX
+# before writing this: real ZHVI and inventory history, unemployment_rate
+# null for literally every month. Requiring it here would silently
+# reintroduce most of the coverage gap this dataset exists to close.
+# Losing it is a real, deliberate tradeoff, not a free one -- but
+# unemployment features were already the least important block in every
+# version of this model's feature-importance results (see
+# model/README.md's Results sections), so trading them away specifically
+# for the gap-filler model, whose one job is maximizing county coverage,
+# is the right side of that tradeoff. Verified directly: keeping
+# unemployment would leave this dataset at 207 usable TX counties, barely
+# better than price-cut's own 203 and defeating the point of building it;
+# dropping it reaches 238 (of 243 Zillow publishes ZHVI for at all).
+ZHVI_FEATURE_COLS = [
+    "zhvi_mom_pct", "zhvi_yoy_pct", "inventory_mom_pct", "inventory_level",
+    "mortgage_rate", "mortgage_rate_mom_change",
+    "month_sin", "month_cos",
+]
+
+
+def engineer_features(panel: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Returns (price_cut_dataset, zhvi_dataset) -- two different row
+    filters and target columns over the *same* underlying per-county
+    feature engineering, not two separate passes over the data. See
+    PRICE_CUT_FEATURE_COLS/ZHVI_FEATURE_COLS above for why they need
+    different feature sets, and each target loop's own comment for why
+    they need different targets too."""
     out = []
     for county, group in panel.groupby("RegionName"):
         g = group.sort_values("year_month").copy()
 
-        # Targets: *change* in price-cut share over the next H months, not
-        # the raw next-month level. Predicting the level let a model just
-        # copy this month's value forward and call it a prediction --
-        # price_cut_pct is highly autocorrelated month to month, so that
-        # alone got most of the way to a good-looking score without
-        # actually explaining any movement. Predicting change removes that
-        # shortcut: naive "predict zero change" is the honest baseline now,
-        # and doing better than it means a horizon's features are actually
-        # carrying signal about which direction things are headed.
+        # Price-cut target: *change* in price-cut share over the next H
+        # months, not the raw next-month level. Predicting the level let a
+        # model just copy this month's value forward and call it a
+        # prediction -- price_cut_pct is highly autocorrelated month to
+        # month, so that alone got most of the way to a good-looking score
+        # without actually explaining any movement. Predicting change
+        # removes that shortcut: naive "predict zero change" is the honest
+        # baseline now, and doing better than it means a horizon's features
+        # are actually carrying signal about which direction things are
+        # headed.
         #
         # Three horizons rather than one so short vs. longer-term dynamics
         # can be compared directly -- current momentum is expected to
@@ -108,6 +180,20 @@ def engineer_features(panel: pd.DataFrame) -> pd.DataFrame:
 
         g["zhvi_mom_pct"] = g["zhvi"].pct_change(1) * 100
         g["zhvi_yoy_pct"] = g["zhvi"].pct_change(12) * 100
+
+        # ZHVI-decline target (the gap-filler model's own, for counties
+        # with no price_cut_pct at all): *change in the rate* of home-value
+        # appreciation over the next H months, negated so the sign
+        # convention matches the price-cut target above -- positive means
+        # "getting worse" for both (more price cuts there, decelerating/
+        # declining values here), not opposite signs for what's shown as
+        # the same red-toward-distress color on the map. Same "predict
+        # change, not the level" reasoning as the price-cut target: raw
+        # zhvi_mom_pct is itself fairly persistent month to month, so
+        # predicting its future *level* would mostly just copy today's
+        # reading forward again.
+        for horizon in TARGET_HORIZONS:
+            g[f"target_zhvi_decline_{horizon}m"] = -(g["zhvi_mom_pct"].shift(-horizon) - g["zhvi_mom_pct"])
 
         g["inventory_mom_pct"] = g["inventory"].pct_change(1) * 100
         g["inventory_level"] = g["inventory"]
@@ -140,16 +226,6 @@ def engineer_features(panel: pd.DataFrame) -> pd.DataFrame:
 
     full = pd.concat(out, ignore_index=True)
 
-    feature_cols = [
-        "price_cut_pct", "price_cut_pct_lag1", "price_cut_pct_lag3", "price_cut_pct_lag6",
-        "price_cut_pct_roll3", "zhvi_mom_pct", "zhvi_yoy_pct", "inventory_mom_pct",
-        "inventory_level", "unemployment_rate", "unemployment_rate_mom_change",
-        "mortgage_rate", "mortgage_rate_mom_change",
-        "month_sin", "month_cos",
-    ]
-    target_cols = [f"target_change_{h}m" for h in TARGET_HORIZONS]
-    keep_cols = ["county", "year_month"] + target_cols + feature_cols
-
     # Every feature has to be present -- mostly the first LOOKBACK_MONTHS
     # of each county, not enough history yet for the lag/rolling features.
     # Targets are handled separately: the 6-month target needs 6 more
@@ -157,8 +233,15 @@ def engineer_features(panel: pd.DataFrame) -> pd.DataFrame:
     # three at once would drop rows near the end of each county's series
     # that are perfectly usable for the shorter horizons. train_model.py
     # drops NaNs on whichever single target column it's training against.
-    clean = full[keep_cols].dropna(subset=feature_cols)
-    return clean
+    price_cut_targets = [f"target_change_{h}m" for h in TARGET_HORIZONS]
+    price_cut_keep = ["county", "year_month"] + price_cut_targets + PRICE_CUT_FEATURE_COLS
+    price_cut_dataset = full[price_cut_keep].dropna(subset=PRICE_CUT_FEATURE_COLS)
+
+    zhvi_targets = [f"target_zhvi_decline_{h}m" for h in TARGET_HORIZONS]
+    zhvi_keep = ["county", "year_month"] + zhvi_targets + ZHVI_FEATURE_COLS
+    zhvi_dataset = full[zhvi_keep].dropna(subset=ZHVI_FEATURE_COLS)
+
+    return price_cut_dataset, zhvi_dataset
 
 
 def main():
@@ -170,13 +253,21 @@ def main():
     print(f"  {len(panel):,} raw county-month rows, {panel['RegionName'].nunique()} counties")
 
     print("Engineering features ...")
-    dataset = engineer_features(panel)
-    print(f"  {len(dataset):,} usable rows after requiring full feature/target history")
-    print(f"  date range: {dataset['year_month'].min()} to {dataset['year_month'].max()}")
+    price_cut_dataset, zhvi_dataset = engineer_features(panel)
+    print(f"  price-cut dataset: {len(price_cut_dataset):,} usable rows, "
+          f"{price_cut_dataset['county'].nunique()} counties, "
+          f"{price_cut_dataset['year_month'].min()} to {price_cut_dataset['year_month'].max()}")
+    print(f"  zhvi-decline dataset: {len(zhvi_dataset):,} usable rows, "
+          f"{zhvi_dataset['county'].nunique()} counties, "
+          f"{zhvi_dataset['year_month'].min()} to {zhvi_dataset['year_month'].max()}")
 
     dest = DATA_DIR / f"{state_key}_county_month_dataset.csv"
-    dataset.to_csv(dest, index=False)
+    price_cut_dataset.to_csv(dest, index=False)
     print(f"Wrote {dest}")
+
+    zhvi_dest = DATA_DIR / f"{state_key}_county_month_dataset_zhvi.csv"
+    zhvi_dataset.to_csv(zhvi_dest, index=False)
+    print(f"Wrote {zhvi_dest}")
 
 
 if __name__ == "__main__":

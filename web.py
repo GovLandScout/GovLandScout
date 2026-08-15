@@ -1417,15 +1417,27 @@ def render_market_trends_page(state: dict) -> str:
             return;
           }}
 
-          const projectedValue = row.current_price_cut_pct + row[horizon];
+          // Two metrics feed this map now -- price_cut wherever Zillow
+          // publishes it, zhvi_decline as a gap-filler where it doesn't
+          // (see generate_predictions.py's build_county_rows()). Same
+          // units on both (fractional, shown as percentage points) and
+          // the same "positive = worsening" sign convention (see
+          // build_dataset.py's target_zhvi_decline_*m), but they're not
+          // the same underlying observation, so gap-filled counties get
+          // a visible flag here rather than being presented as if Zillow
+          // had price-cut data for them after all.
+          const isGapFilled = row.metric === 'zhvi_decline';
+          const currentLabel = isGapFilled ? 'Current home-value growth rate' : 'Current price-cut share';
+          const projectedValue = row.current_value + row[horizon];
           const std = row[horizon + '_std'];
           const std95 = row[horizon + '_std95'];
           const sign = row[horizon] > 0 ? '+' : '';
 
           panel.innerHTML = `
             <h3 style="margin-top:0;">${{row.county}}</h3>
+            ${{isGapFilled ? `<p style="margin:0 0 0.5rem;font-size:0.8rem;color:#b45309;">Zillow doesn't publish price-cut data for this county -- estimated from home-value trends instead. See model/README.md.</p>` : ''}}
             <p style="margin: 0 0 0.75rem;">
-              Current price-cut share: <b>${{(row.current_price_cut_pct * 100).toFixed(1)}}%</b>
+              ${{currentLabel}}: <b>${{(row.current_value * 100).toFixed(1)}}%</b>
               &middot; Model's ${{horizonLabel}} projection:
               <b>${{sign}}${{(row[horizon] * 100).toFixed(1)}} points</b>
               ${{std != null ? `(&plusmn;${{(std * 100).toFixed(1)}} points, a calibrated ~68% confidence range` : ''}}
@@ -1433,7 +1445,7 @@ def render_market_trends_page(state: dict) -> str:
             </p>
             ${{buildTrendSvg(row.history, projectedValue, std, std95)}}
             <p style="margin: 0.5rem 0 0; font-size: 0.8rem; color: #64748b;">
-              Solid line: actual monthly price-cut share, last ${{row.history.length}} months.
+              Solid line: actual monthly ${{isGapFilled ? 'home-value growth rate' : 'price-cut share'}}, last ${{row.history.length}} months.
               Dashed line: the model's projected value ${{horizonLabel.toLowerCase()}}, not another observed month.
               ${{std != null ? `Green bar: the ~68% confidence range around that projection.` : ''}}
               ${{std95 != null ? ` Blue bar: the ~95% range.` : ''}}
@@ -1445,21 +1457,37 @@ def render_market_trends_page(state: dict) -> str:
           const horizon = document.getElementById('horizonSelect').value;
           const horizonLabel = document.getElementById('horizonSelect').selectedOptions[0].textContent;
 
-          const values = COUNTY_PREDICTIONS.map(r => r[horizon]).filter(v => v != null);
-          const maxAbs = Math.max(...values.map(Math.abs));
-          const stds = COUNTY_PREDICTIONS.map(r => r[horizon + '_std']).filter(v => v != null);
-          const maxStd = Math.max(...stds);
+          // price_cut and zhvi_decline predictions are different units
+          // (percentage-point change in price-cut share vs. in ZHVI's own
+          // month-over-month growth rate -- see generate_predictions.py's
+          // build_county_rows()), so each metric gets its own maxAbs/
+          // maxStd rather than one shared scale that would make one
+          // group look artificially muted or extreme next to the other.
+          const maxAbsByMetric = {{}}, maxStdByMetric = {{}};
+          for (const metric of ['price_cut', 'zhvi_decline']) {{
+            const rows = COUNTY_PREDICTIONS.filter(r => r.metric === metric);
+            const values = rows.map(r => r[horizon]).filter(v => v != null);
+            maxAbsByMetric[metric] = values.length ? Math.max(...values.map(Math.abs)) : 0;
+            const stds = rows.map(r => r[horizon + '_std']).filter(v => v != null);
+            maxStdByMetric[metric] = stds.length ? Math.max(...stds) : 0;
+          }}
 
           if (choroplethLayer) trendsMap.removeLayer(choroplethLayer);
 
           choroplethLayer = L.geoJSON(STATE_COUNTIES, {{
             style: feature => {{
               const row = PREDICTIONS_BY_COUNTY[feature.properties.name];
+              const isGapFilled = row && row.metric === 'zhvi_decline';
               return {{
-                fillColor: row ? distressColor(row[horizon], maxAbs) : '#f8fafc',
-                fillOpacity: row ? confidenceOpacity(row[horizon + '_std'], maxStd) : 0.4,
-                color: '#94a3b8',
-                weight: 1,
+                fillColor: row ? distressColor(row[horizon], maxAbsByMetric[row.metric]) : '#f8fafc',
+                fillOpacity: row ? confidenceOpacity(row[horizon + '_std'], maxStdByMetric[row.metric]) : 0.4,
+                // Gap-filled counties (no Zillow price-cut data -- see
+                // build_county_rows()) get a dashed, darker border so
+                // they read as "estimated from a different metric"
+                // rather than blending in as if directly comparable.
+                color: isGapFilled ? '#475569' : '#94a3b8',
+                weight: isGapFilled ? 1.5 : 1,
+                dashArray: isGapFilled ? '3,2' : null,
               }};
             }},
             onEachFeature: (feature, layer) => {{
@@ -1472,9 +1500,11 @@ def render_market_trends_page(state: dict) -> str:
               const sign = row[horizon] > 0 ? '+' : '';
               const std = row[horizon + '_std'];
               const std95 = row[horizon + '_std95'];
+              const isGapFilled = row.metric === 'zhvi_decline';
+              const currentLabel = isGapFilled ? 'Current home-value growth rate' : 'Current price-cut share';
               layer.bindTooltip(
-                `<b>${{feature.properties.name}}</b><br>`
-                + `Current price-cut share: ${{(row.current_price_cut_pct * 100).toFixed(1)}}%<br>`
+                `<b>${{feature.properties.name}}</b>${{isGapFilled ? ' <span style="color:#b45309;">(est. from home values, no price-cut data)</span>' : ''}}<br>`
+                + `${{currentLabel}}: ${{(row.current_value * 100).toFixed(1)}}%<br>`
                 + `Predicted change (${{horizonLabel}}): ${{sign}}${{pct}} points`
                 + `${{std != null ? ` (&plusmn;${{(std * 100).toFixed(1)}}${{std95 != null ? `, up to &plusmn;${{(std95 * 100).toFixed(1)}} worst case` : ''}})` : ''}}<br>`
                 + `<span style="color:#64748b">as of ${{row.as_of}} -- click for trend chart</span>`
@@ -1484,10 +1514,12 @@ def render_market_trends_page(state: dict) -> str:
           }}).addTo(trendsMap);
 
           document.getElementById('trendsLegend').innerHTML =
-            `<b>${{horizonLabel}}</b> -- darker red: more price cuts expected (rising distress) &middot; `
-            + `darker green: fewer expected (easing) &middot; gray: no model data for that county. `
+            `<b>${{horizonLabel}}</b> -- darker red: more distress expected &middot; `
+            + `darker green: less expected (easing) &middot; gray: no model data for that county. `
             + `Faded fill: a wider calibrated confidence interval for that county, i.e. lower confidence. `
-            + `Scale is relative to this horizon's own range (&plusmn;${{(maxAbs * 100).toFixed(1)}} points at the extremes).`;
+            + `Color scale is relative to each county's own metric range (price-cut and home-value-based `
+            + `counties are scaled separately, since they're not the same unit). `
+            + `Dashed border: county has no Zillow price-cut data, shown here from home-value trends instead.`;
 
           // Keep the detail panel in sync if a county's already selected
           // and the visitor just switched horizons, instead of leaving it
