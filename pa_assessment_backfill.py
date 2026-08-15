@@ -31,11 +31,12 @@ against real listings already in the database before writing this:
   - Chester: id field (UPI) matches account_number exactly.
   - Montgomery: id field (PARCEL) matches only after stripping the dashes
     our own account_number has ("01-00-01606-02-2" -> "010001606022").
-  - Cumberland: id field (PIN) matches only after stripping a trailing
-    period some Bid4Assets-sourced account numbers carry ("...-013." ->
-    "...-013") -- confirmed against a real parcel whose GIS-published
-    SITUS address ("493 ARLINGTON ROAD") exactly matched what
-    bid4assets_scraper.py had already scraped for the same parcel.
+  - Cumberland: id field (PIN) matches only after reducing account_number
+    to its shared "NN-NN-NNNN-NNN" base id -- confirmed against a real
+    parcel whose GIS-published SITUS address ("493 ARLINGTON ROAD")
+    exactly matched what bid4assets_scraper.py had already scraped for
+    the same parcel. See cumberland_base_id()'s own docstring for the
+    per-lot suffix shapes this strips.
   - Monroe: id field (PARID) matches account_number exactly -- the same
     county-run iasWorld layer pa_parcel_geocode.py's MONROE_SOURCE
     already uses for geocoding, with a value split across two fields
@@ -57,6 +58,7 @@ layer's own id field to work out whatever format difference exists (see
 each config's `normalize_id`) -- same investigation as the three above.
 """
 
+import re
 from datetime import datetime, timezone
 
 import requests
@@ -104,6 +106,30 @@ def strip_trailing_period(account_number: str) -> str:
     return account_number.strip().rstrip(".")
 
 
+CUMBERLAND_BASE_ID_PATTERN = re.compile(r"^(\d{2}-\d{2}-\d{4}-\d{3})")
+
+
+def cumberland_base_id(account_number: str) -> str:
+    """Same base-id extraction as pa_parcel_geocode.py's
+    cumberland_bid4assets_transform() (duplicated here, not imported --
+    this module reads a different ArcGIS layer for a different purpose,
+    it doesn't need that module's geocoding-specific machinery, just the
+    same regex). A plain strip_trailing_period() only handled the
+    simplest suffix shape (a bare trailing "."); the remaining
+    unmatched Cumberland listings all carry a longer per-lot suffix
+    (".-TR012345", ".-U725" -- a specific site within a larger
+    subdivided tract, e.g. a mobile home park lot) that this layer's own
+    PIN field never has. Verified against all 156 real Cumberland
+    listings still missing a value after the simple strip: all 156
+    (100%) matched once reduced to the shared "NN-NN-NNNN-NNN" base id
+    every variant starts with -- several listings share one base id and
+    so resolve to the same value, a real limitation of parcel-level data
+    for a subdivided tract, not a bug (same tradeoff already documented
+    for geocoding this same shape)."""
+    match = CUMBERLAND_BASE_ID_PATTERN.match(account_number.strip())
+    return match.group(1) if match else account_number.strip().rstrip(".")
+
+
 def berks_first14(account_number: str) -> str:
     """Bid4Assets' own Berks numbers are a 2-digit municipal code prepended
     to a 12-digit parcel id (14 digits total), same shape
@@ -147,7 +173,7 @@ COUNTY_CONFIGS = {
         "query_url": "https://services1.arcgis.com/1Cfo0re3un0w6a30/arcgis/rest/services/Tax_Parcels/FeatureServer/0/query",
         "id_field": "PIN",
         "value_fields": ("TOTAL_VAL",),
-        "normalize_id": strip_trailing_period,
+        "normalize_id": cumberland_base_id,
     },
     # Same county-run iasWorld layer pa_parcel_geocode.py's MONROE_SOURCE
     # already uses for geocoding (PARID matches bid4assets.com's scraped
