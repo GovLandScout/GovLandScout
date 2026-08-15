@@ -25,7 +25,7 @@ over, roughly annually.
 Each county publishes its parcels layer under its own GIS org, with its
 own field names and its own account-number format -- there's no
 standardized statewide schema, so this is a per-county config
-(COUNTY_CONFIGS below), not one general parser. Five counties confirmed
+(COUNTY_CONFIGS below), not one general parser. Seven counties confirmed
 against real listings already in the database before writing this:
 
   - Chester: id field (UPI) matches account_number exactly.
@@ -47,6 +47,15 @@ against real listings already in the database before writing this:
     DEP's statewide one pa_parcel_geocode.py uses for Berks geocoding
     (that one has no value field at all) -- see berks_first14()'s own
     docstring.
+  - Potter: id field (Map_Number) matches after stripping this project's
+    own sale-type suffix -- the county's own self-hosted ArcGIS Server,
+    found via its public Web AppBuilder app's config rather than a
+    direct search (that only turns up the app, not the data server it
+    points at). See potter_strip_sale_type()'s own docstring.
+  - Bedford: id field (taxidnum) matches account_number exactly -- same
+    "found via the county's own web app's config" pattern as Potter,
+    this time hosted on ArcGIS Online under the county planning office's
+    own org rather than the county's own server.
 
 Adding another county means finding its own ArcGIS FeatureServer (search
 arcgis.com's public item search, e.g. "<county> County Pennsylvania
@@ -156,6 +165,17 @@ def identity(account_number: str) -> str:
     return account_number.strip()
 
 
+def potter_strip_sale_type(account_number: str) -> str:
+    """bid4assets_scraper.py appends this project's own sale-type suffix
+    to Potter's account numbers (e.g. "010-010 -062_UPSET" for an upset
+    sale) -- Potter's own Map_Number field never carries it
+    ("010-010 -062"). Verified against all 56 real Potter listings
+    still missing a value: 54 (96.4%) matched once the suffix (and
+    everything after the underscore, in case a "_JUDICIAL" or similar
+    variant shows up too) is stripped."""
+    return account_number.strip().split("_")[0].strip()
+
+
 COUNTY_CONFIGS = {
     "Chester": {
         "query_url": "https://services.arcgis.com/G4S1dGvn7PIgYd6Y/arcgis/rest/services/Parcels_owners/FeatureServer/0/query",
@@ -218,6 +238,29 @@ COUNTY_CONFIGS = {
         "id_field": "PROPID",
         "value_fields": ("VALUTOTAL",),
         "normalize_id": berks_first14,
+    },
+    # Potter County Assessment & GIS Dept's own self-hosted ArcGIS Server
+    # (maps.pottercountypa.net) -- found by pulling the operational-layer
+    # URLs out of the county's public "Tax Parcel Viewer" Web AppBuilder
+    # app's config (the app itself is hosted on ArcGIS Online, but the
+    # data it points at lives on the county's own server, not
+    # arcgis.com). No statewide DEP-layer equivalent was checked for
+    # Potter since this county-run layer already had what was needed.
+    "Potter": {
+        "query_url": "https://maps.pottercountypa.net/arcgis/rest/services/TaxParcel/TaxParcels/MapServer/0/query",
+        "id_field": "Map_Number",
+        "value_fields": ("Current_Total_Value",),
+        "normalize_id": potter_strip_sale_type,
+    },
+    # Same pattern as Potter -- Bedford County's own Web AppBuilder
+    # "Online Parcel Viewer" app config points at a county-run parcel
+    # layer hosted on ArcGIS Online under the county planning office's
+    # own org (bedfordplanning.maps.arcgis.com), not a third party.
+    "Bedford": {
+        "query_url": "https://services2.arcgis.com/tXFMtuwRfEDEFdnG/arcgis/rest/services/April2023Parcels/FeatureServer/0/query",
+        "id_field": "taxidnum",
+        "value_fields": ("TOT_VAL",),
+        "normalize_id": identity,
     },
 }
 
