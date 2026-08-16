@@ -29,48 +29,71 @@ scraped from mvbalaw.com matches property id 103125 on
 esearch.bellcad.org, whose page's own Situs Address ("1313 S 57TH ST,
 TEMPLE, TX 76504") is an exact match.
 
-Only two counties are wired in here, not the full ~10-county
+Seven counties are wired in here, not the full ~15-county
 mvbalaw.com/pbfcm.com/govease.com gap this project's own audits have
 found (see model/README.md-adjacent commit history) -- each county's
-CAD runs its own domain and, sometimes, its own quirks:
+CAD runs its own domain and, sometimes, its own quirks. Every one below
+uses the same `strip_case_number()` transform (first segment before the
+scraper's own appended "_suffix") *except* where noted -- Wichita's
+govease.com-sourced account numbers have no suffix to strip at all,
+which the same transform handles as a no-op:
 
-  - Bell (esearch.bellcad.org): account_number's first segment before
-    the "_" (mvbalaw.com's own scraped case-number suffix, e.g.
-    "103125_25DCV350972" -> "103125") matches this site's property id
-    directly. Verified against all 38 real ungeocoded-value Bell
-    listings: 36 (94.7%) matched.
-  - Taylor (esearch.taylor-cad.org): same account_number shape, same
-    transform. Verified against all 41 real listings: 41 (100%)
-    matched.
+  - Bell (esearch.bellcad.org, mvbalaw.com): 36 of 38 (94.7%) matched.
+  - Taylor (esearch.taylor-cad.org, mvbalaw.com): 41 of 41 (100%).
+  - Hill (esearch.hillcad.org, mvbalaw.com): 15 of 15 (100%) -- verified
+    via the listing's own `description` text (which embeds a real
+    street address mvba_scraper.py never parses into the `address`
+    column itself, see its own docstring) exactly matching this site's
+    Situs Address for the same property id.
+  - Bosque (esearch.bosquecad.com, mvbalaw.com): 13 of 13 (100%).
+  - Comanche (esearch.comanchecad.org, mvbalaw.com): 19 of 20 (95%).
+  - Wichita (esearch.wadtx.com, govease.com -- not mvbalaw.com; GovEase
+    also publishes no independent value, same reason as MVBA/PBFCM):
+    16 of 17 (94%).
+  - Hays (esearch.hayscad.com, mvbalaw.com): 9 of 11 matched -- Hays
+    also has separate hudgis-hud.opendata.arcgis.com-sourced listings
+    (a HUD surplus feed, unrelated to the CAD entirely) that this
+    doesn't and shouldn't try to match; the 2 unmatched here are
+    genuine misses within the mvbalaw.com subset, not those.
 
 Investigated and ruled out this round, for future reference rather than
 silently dropped:
-  - Leon: the "esearch.leoncad.org" domain search results kept pointing
-    to doesn't actually exist -- confirmed directly, it has no DNS
-    record at all (`dig` returns nothing), not a transient outage.
+  - Leon, Brown: the domains search results consistently suggest
+    ("esearch.leoncad.org", "esearch.browncad.com") don't actually
+    exist -- confirmed directly, neither has a DNS record at all
+    (`dig` returns nothing), not a transient outage.
   - Williamson: "esearch.wcad.org" resolves but serves a TLS
     certificate for a different hostname (hostname mismatch, not this
     project's fault); the (differently-named) "search.wcad.org" does
     resolve and does present a valid cert, but returns a bare 503 on
     every request tried.
-  - Brown: "esearch.browncad.com" (the domain consistently suggested)
-    also has no DNS record.
-  - Jasper: esearch.jaspercad.org is real and reachable (200 OK), but
-    the account_number shape bid4assets.com uses for Jasper
-    ("R000109_7911") doesn't match this site's own property-id
-    convention the same simple way Bell/Taylor's do -- would need a
-    real investigation of Jasper's own id format, not attempted here.
+  - McLennan, Rusk: both reachable in DNS but fail the TLS handshake
+    itself (SSL_ERROR_SYSCALL / EOF, not a certificate problem) --
+    plausibly a WAF or load balancer quirk specific to these two sites,
+    not something a different User-Agent or retry fixed.
+  - Jasper, Hale, Johnson: all three sites are real and reachable
+    (200 OK), but none matched with the simple strip-after-"_" id --
+    each county's own account-number shape (Jasper: "R000109_7911",
+    Hale: an R-prefixed id followed by a full court case name after the
+    "_", Johnson: a dashed "126-0244-03068" that looks like a
+    Geographic ID rather than a Property ID) would need its own
+    real investigation, not attempted here.
+  - Grayson: esearch.graysonappraisal.org is reachable, but
+    govease.com's own account numbers for Grayson ("T-20-3168") look
+    like GovEase's internal sale identifiers, not a Grayson CAD
+    property id at all -- a different kind of mismatch than the
+    id-shape guesses above, likely unrecoverable without a separate
+    GovEase-side lookup first.
+  - Bastrop: esearch.bastropcad.org returns a persistent HTTP 500 on
+    every request tried (confirmed non-transient across 3 retries) --
+    a real server-side issue on their end, not a request-shape problem.
 
 A real next step for whoever picks this up: repeat this same
 domain-hunt-then-verify process for the rest of the mvbalaw.com/
 pbfcm.com/govease.com counties this project has never priced at all
-(Jasper, McLennan, Williamson, Brown, Eastland, Runnels, Comanche,
-Hale, Bastrop, Rusk, Wichita, Hill, Grayson, Denton, Bosque, Johnson,
-Hays, Lampasas, Medina, and others) -- each is its own small
-investigation, the same shape as this file's own two entries, not a
-generalizable crawl (McLennan alone, though also True-Automation-
-powered, was TLS-unreachable from here the same way Williamson's main
-domain was, and never got a working workaround).
+(Eastland, Runnels, Denton, Lampasas, Medina, and others) -- each is
+its own small investigation, the same shape as this file's own entries,
+not a generalizable crawl.
 """
 
 import re
@@ -108,6 +131,29 @@ COUNTY_CONFIGS = {
     },
     "Taylor": {
         "domain": "esearch.taylor-cad.org",
+        "normalize_id": strip_case_number,
+    },
+    "Hill": {
+        "domain": "esearch.hillcad.org",
+        "normalize_id": strip_case_number,
+    },
+    "Bosque": {
+        "domain": "esearch.bosquecad.com",
+        "normalize_id": strip_case_number,
+    },
+    "Comanche": {
+        "domain": "esearch.comanchecad.org",
+        "normalize_id": strip_case_number,
+    },
+    # govease.com-sourced, not mvbalaw.com -- account numbers here have
+    # no case-number suffix at all (e.g. "116506"), so strip_case_number
+    # is a safe no-op rather than the wrong transform.
+    "Wichita": {
+        "domain": "esearch.wadtx.com",
+        "normalize_id": strip_case_number,
+    },
+    "Hays": {
+        "domain": "esearch.hayscad.com",
         "normalize_id": strip_case_number,
     },
 }
