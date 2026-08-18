@@ -1,5 +1,5 @@
 """
-GovLandScout - IRS Seized Real Estate Auction Scraper (Texas)
+GovLandScout - IRS Seized Real Estate Auction Scraper (TX, PA, CA)
 
 irsauctions.gov (run by the IRS/Department of the Treasury) lists real
 property seized under Internal Revenue Code 6331 for nonpayment of
@@ -9,7 +9,18 @@ federal surplus real estate. Nationwide volume is low (regularly under
 10 real-estate listings at a time across the whole country), so this
 runs the same as houston_scraper.py/publicsurplus_scraper.py: cheap to
 keep running daily even when it finds nothing, ready the moment a new
-Texas listing appears.
+listing in one of this project's own states appears.
+
+Originally Texas-only; generalized to every state this project actually
+covers (see TARGET_STATES) after checking the live site directly turned
+up a real, currently-missed Pennsylvania listing (a Philadelphia
+rowhouse) sitting right there in the same nationwide feed the old
+TX-only filter was silently discarding -- not a hypothetical gap.
+California had no real-estate listings live at the same time this was
+checked, which is exactly why this filters by *state*, not by manually
+re-checking whichever state happens to have inventory today: whenever
+one does appear, this picks it up the same way TX/PA already do,
+without needing another pass like this one.
 
 The list view only gives city/state/zip, not a street address or county
 -- both come from the "Notice of Sale" prose on each listing's detail
@@ -29,17 +40,27 @@ LIST_URL = "https://www.irsauctions.gov/auction/items"
 REAL_ESTATE_ASSET_TYPE = "8"
 GEOCODE_URL = "https://geocoding.geo.census.gov/geocoder/geographies/onelineaddress"
 
+TARGET_STATES = ("TX", "PA", "CA")
+STATE_ALTERNATION = "|".join(TARGET_STATES)
+
 HEADERS = {
     "User-Agent": "GovLandScout-SchoolProject/1.0 (contact: your-email@example.com)"
 }
 
+# Any one of this project's own states, as a whole word -- checked
+# against a card's combined location+title text to both decide whether
+# to keep it and which state to tag it with (see fetch_real_estate_cards).
+STATE_FINDER_PATTERN = re.compile(rf"\b({STATE_ALTERNATION})\b")
+
 # Detail pages phrase the address a couple of different ways within the
 # prose "Notice of Public Auction Sale" text -- try the most explicit
 # form first ("Place of Sale: <address>"), then the looser one used on
-# some listings ("more commonly known as <address>,").
+# some listings ("more commonly known as <address>,"). Built off the
+# same TARGET_STATES alternation rather than a second hardcoded "TX" so
+# the two lists can't quietly drift apart.
 ADDRESS_PATTERNS = [
-    re.compile(r"Place of Sale:\s*([^\n]+?,\s*TX\s*\d{5})", re.IGNORECASE),
-    re.compile(r"known as\s*([^,]+,\s*[^,]+,\s*TX\s*\d{5})", re.IGNORECASE),
+    re.compile(rf"Place of Sale:\s*([^\n]+?,\s*(?:{STATE_ALTERNATION})\s*\d{{5}})", re.IGNORECASE),
+    re.compile(rf"known as\s*([^,]+,\s*[^,]+,\s*(?:{STATE_ALTERNATION})\s*\d{{5}})", re.IGNORECASE),
 ]
 
 
@@ -56,19 +77,21 @@ def fetch_real_estate_cards() -> list[dict]:
             continue
 
         # The dedicated location field is sometimes blank even when the
-        # listing is clearly in Texas (title says so) -- check both
-        # rather than relying on the location field alone.
+        # listing is clearly in one of TARGET_STATES (title says so) --
+        # check both rather than relying on the location field alone.
         location_el = article.select_one(".field--name-field-property-address address")
         location_text = location_el.get_text(strip=True) if location_el else ""
         title_text = link.get_text(strip=True)
         combined_text = f"{location_text} {title_text}"
-        if not re.search(r"\bTX\b", combined_text):
-            continue  # not a Texas listing
+        state_match = STATE_FINDER_PATTERN.search(combined_text)
+        if not state_match:
+            continue  # not one of this project's own states
 
         cards.append({
             "title": title_text,
             "detail_url": "https://www.irsauctions.gov" + link["href"],
             "minimum_bid": min_bid_el.get("content") if min_bid_el else None,
+            "state": state_match.group(1),
         })
     return cards
 
@@ -102,9 +125,9 @@ def geocode(address: str) -> tuple[float, float, str] | None:
 
 
 def main():
-    print(f"Fetching {LIST_URL} (Real-Estate, Texas) ...")
+    print(f"Fetching {LIST_URL} (Real-Estate, {'/'.join(TARGET_STATES)}) ...")
     cards = fetch_real_estate_cards()
-    print(f"Found {len(cards)} Texas real estate listing(s).")
+    print(f"Found {len(cards)} real estate listing(s) across {TARGET_STATES}.")
 
     if not cards:
         return
@@ -143,6 +166,7 @@ def main():
             source_url=card["detail_url"],
             latitude=latitude,
             longitude=longitude,
+            state=card["state"],
         )
         stored += 1
 
