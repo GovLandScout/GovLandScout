@@ -1584,7 +1584,8 @@ SOURCE_LABELS = {
     "hudgis-hud.opendata.arcgis.com": "HUD Foreclosed Homes (Open Data)",
     "houstontx.gov": "City of Houston Real Property",
     "publicsurplus.com": "PublicSurplus (Texas government sellers)",
-    "realauction.com": "RealAuction/RealForeclose (Sheriff & Constable sales)",
+    "realauction.com": "RealAuction/RealForeclose (TX Sheriff & Constable tax sales; "
+                        "PA county Sheriff Sales, mostly mortgage foreclosure)",
     "guadalupetx.gov": "Guadalupe County (self-published)",
     "govease.com": "GovEase (county tax sale platform -- TX Sheriff/Constable sales, PA Upset/Judicial sales)",
     "collincountytx.gov": "Collin County Constable Sales (self-published)",
@@ -1592,6 +1593,7 @@ SOURCE_LABELS = {
                        "also CA county tax-defaulted property auctions)",
     "montgomerycountypa.gov": "Montgomery County Tax Claim Bureau (self-published)",
     "chesco.org": "Chester County Tax Claim Bureau (self-published)",
+    "sheriffalleghenycounty.com": "Allegheny County Sheriff Sales (mortgage foreclosure, tax lien, and municipal lien, self-published)",
     "manual": "User-submitted (unverified)",
 }
 

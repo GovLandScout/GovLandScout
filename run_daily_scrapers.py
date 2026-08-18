@@ -33,6 +33,10 @@ SCRAPERS = [
     "montco_scraper.py", "chester_scraper.py",  # one document apiece, no rate-limiting --
     # fast enough for the daily batch, unlike bid4assets_scraper.py (see that module's own
     # docstring for why that one runs as its own separate weekly job instead)
+    "allegheny_scraper.py",  # one PDF fetch/parse pass -- fast enough for the daily batch too.
+    # Sits behind a WAF unlike every other source here (see that module's own docstring); a
+    # failed fetch is treated as "try again tomorrow" internally, not a crash, so a blocked day
+    # just shows up as one failed row in scrape_runs rather than taking the rest of the batch down.
 ]
 
 # Kept short -- this ends up in a DB row and eventually the bell's
