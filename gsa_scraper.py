@@ -18,6 +18,24 @@ different things.
 The page itself is server-rendered, but pagination/filtering goes
 through a JSON endpoint at the same URL (POST, not GET) -- found by
 reading our_listing_js.js's $.ajax() call rather than guessing.
+
+realestatesales.gov's own feed is genuinely nationwide -- unlike every
+other scraper in this project, there was never a hardcoded state filter
+here to begin with, which sounds like an advantage but turned out to
+hide a real bug: main() never passed a `state` argument to
+combined_db.upsert_listing() at all, so every listing this scraper ever
+stored -- regardless of which of the ~20 different states GSA's own
+feed actually had listed at the time -- silently got that function's
+own state="TX" default. Confirmed directly against the production
+database before fixing this: 12 of the 16 GSA listings stored there
+were real properties in Vermont, New Jersey, Colorado, Louisiana, and
+seven other states nowhere near Texas, every one of them mislabeled
+"TX". Now filtered to TARGET_STATES (this project's own three) using
+the feed's own `iso_state_name` field, with that same field threaded
+through as the real `state=` argument -- narrower than "store literally
+everything nationwide," but the alternative (storing real properties in
+states this project has no page, model, or map for, permanently
+mislabeled as a state they aren't) is worse than not storing them.
 """
 
 import sqlite3
@@ -30,6 +48,7 @@ import combined_db
 URL = "https://realestatesales.gov/our-listing/"
 DB_PATH = "gsa_real_estate_sales.db"
 PAGE_SIZE = 48
+TARGET_STATES = ("TX", "PA", "CA")
 
 HEADERS = {
     "User-Agent": "GovLandScout-SchoolProject/1.0 (contact: your-email@example.com)",
@@ -165,8 +184,17 @@ def main():
 
     combined_conn = combined_db.get_connection()
 
+    in_scope = 0
     for listing in listings:
+        # Local cache mirrors the full nationwide feed regardless of
+        # state -- only the production write below is scoped down to
+        # TARGET_STATES, see module docstring.
         upsert_listing(conn, listing)
+
+        state = listing.get("iso_state_name")
+        if state not in TARGET_STATES:
+            continue
+        in_scope += 1
 
         address = ", ".join(
             part for part in (
@@ -194,8 +222,10 @@ def main():
             source_url=f"https://realestatesales.gov/asset-details/?property_id={listing['id']}",
             latitude=float(listing["latitude"]) if listing.get("latitude") else None,
             longitude=float(listing["longitude"]) if listing.get("longitude") else None,
+            state=state,
         )
 
+    print(f"{in_scope} of {len(listings)} listing(s) were in {TARGET_STATES}; stored those in the shared database.")
     combined_conn.close()
 
     print(f"Stored {len(listings)} listings into {DB_PATH}")
