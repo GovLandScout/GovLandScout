@@ -1,5 +1,5 @@
 """
-GovLandScout - GovEase Scraper (Texas and Pennsylvania counties)
+GovLandScout - GovEase Scraper (Texas, Pennsylvania, and California counties)
 
 GovEase (liveauctions.govease.com) is another online tax sale platform,
 the same relationship to this project as RealAuction (see
@@ -40,6 +40,32 @@ the TX McLennan exclusion above. Every listing carries a `state` tag
 ("TX"/"PA") through to combined_db.upsert_listing -- required because
 county names collide across states (Texas has its own Potter County,
 around Amarillo, entirely unrelated to Pennsylvania's).
+
+As of adding California support, the dropdown lists three CA auctions:
+
+    CA - Kern
+    CA - Los Angeles
+    CA - Los Angeles Follow-Up
+
+Neither Kern nor Los Angeles overlaps any bid4assets.com CA storefront
+this project already scrapes (confirmed directly against that scraper's
+live discovery results before adding these -- see bid4assets_scraper.py)
+-- Los Angeles and Kern simply aren't among the counties currently
+running a Bid4Assets auction. "Los Angeles Follow-Up" is the same kind
+of re-listing GovEase's own auction naming already documents happening
+for PA (a Judicial Sale re-offering whatever an Upset Sale didn't sell)
+and for TX's McLennan (a second "- Linebarger"-labeled listing of the
+same county's own auction under another trustee) -- the same parcel can
+plausibly show up in both the main and follow-up California auctions,
+so both get an explicit `sale_type` tag ("Main"/"FollowUp") the same
+uniform way every PA county already does, not left to collide silently
+if that ever actually happens. Los Angeles's main auction had an empty
+property grid when this was added (its list wasn't published yet --
+confirmed by fetching the live page directly, not a parsing failure);
+it's included anyway since GovEase auctions publish their list closer
+to the sale date and this project's regular scraper runs will pick it
+up once that happens, the same as any other county whose listings
+haven't gone live yet.
 
 Unlike RealAuction, this doesn't need any session/JS reverse-engineering:
 each auction's /browsestandard page 302-redirects to /browse, which
@@ -103,6 +129,9 @@ COUNTIES = [
     ("Lawrence", "pa", "palawrencejudicial", 1492, "Judicial"),
     ("Potter", "pa", "papotterupset", 1453, "Upset"),
     ("York", "pa", "payorkupset", 1350, "Upset"),
+    ("Kern", "ca", "cakern", 1348, "Main"),
+    ("Los Angeles", "ca", "calosangeles", 1391, "Main"),
+    ("Los Angeles", "ca", "calosangelesfollowup", 1396, "FollowUp"),
 ]
 
 HEADERS = {
