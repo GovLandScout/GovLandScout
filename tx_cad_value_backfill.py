@@ -55,6 +55,23 @@ which the same transform handles as a no-op:
     (a HUD surplus feed, unrelated to the CAD entirely) that this
     doesn't and shouldn't try to match; the 2 unmatched here are
     genuine misses within the mvbalaw.com subset, not those.
+  - Lampasas (esearch.lampasascad.com, mvbalaw.com): 9 of 9 (100%) --
+    its own account numbers are zero-padded to 12 digits
+    ("000000000068_20289") where this site's own property id is the
+    bare number ("68"); esearch.lampasascad.org (the domain search
+    results actually suggest) doesn't resolve in DNS at all, only the
+    .com does.
+  - Medina (esearch.medinacad.org, mvbalaw.com): 8 of 8 (100%) -- its
+    own account numbers carry an "R" prefix ("R11451") this site's
+    property id doesn't. Medina also has separate glo.texas.gov-sourced
+    listings (Texas General Land Office veteran's land sales, unrelated
+    to the CAD) that fetch_target_accounts doesn't filter out by
+    source -- same situation as Hays's hudgis rows above, and just as
+    harmless in practice (a GLO account number colliding with an
+    unrelated real Medina CAD property id well enough to return a
+    plausible-looking Market Value hasn't been observed, and is exactly
+    the kind of coincidence the address/Situs-address cross-checks this
+    file's own history relies on to catch, were it to happen).
 
 Investigated and ruled out this round, for future reference rather than
 silently dropped:
@@ -78,30 +95,49 @@ silently dropped:
     "_", Johnson: a dashed "126-0244-03068" that looks like a
     Geographic ID rather than a Property ID) would need its own
     real investigation, not attempted here.
-  - Grayson: esearch.graysonappraisal.org is reachable, but
-    govease.com's own account numbers for Grayson ("T-20-3168") look
-    like GovEase's internal sale identifiers, not a Grayson CAD
-    property id at all -- a different kind of mismatch than the
-    id-shape guesses above, likely unrecoverable without a separate
-    GovEase-side lookup first.
+  - Grayson, Denton: esearch.graysonappraisal.org is reachable, but
+    govease.com's own account numbers for both ("T-20-3168",
+    "19-7161-16") look like GovEase's internal sale identifiers, not a
+    CAD property id at all -- a different kind of mismatch than the
+    id-shape guesses elsewhere in this file, likely unrecoverable
+    without a separate GovEase-side lookup first. Denton's own expected
+    domain ("esearch.dentoncad.com") doesn't even resolve, on top of
+    that.
   - Bastrop: esearch.bastropcad.org returns a persistent HTTP 500 on
     every request tried (confirmed non-transient across 3 retries) --
     a real server-side issue on their end, not a request-shape problem.
+  - Eastland, Runnels: neither has a discoverable "esearch.*" domain at
+    all -- both appear to use a different vendor (or an off-site
+    third-party search tool, per Runnels CAD's own site) rather than
+    True Automation/BIS.
 
 A real next step for whoever picks this up: repeat this same
 domain-hunt-then-verify process for the rest of the mvbalaw.com/
 pbfcm.com/govease.com counties this project has never priced at all
-(Eastland, Runnels, Denton, Lampasas, Medina, and others) -- each is
-its own small investigation, the same shape as this file's own entries,
-not a generalizable crawl.
+(Jasper, McLennan, Williamson, Brown, Rusk, Eastland, Runnels, and
+others, with their specific per-county blockers documented above) --
+each is its own small investigation, the same shape as this file's own
+entries, not a generalizable crawl.
 """
 
 import re
+import socket
 import time
 
 import requests
 
 import combined_db
+
+# requests' own per-call timeout=15 (below) only bounds the connect/read
+# phases of an already-resolved connection -- it does NOT reliably bound
+# DNS resolution itself, which happens first via the plain socket module.
+# Confirmed the hard way: a real run hung for over an hour on the very
+# first request to one of these counties' sites with no exception raised
+# at all, past that 15s well past any reasonable retry. Setting a global
+# socket-level default closes that gap -- every socket this process opens
+# (DNS lookups included) now has a hard ceiling, so a single unresponsive
+# site can cost at most this long, not the rest of the run.
+socket.setdefaulttimeout(20)
 
 HEADERS = {
     "User-Agent": "GovLandScout-SchoolProject/1.0 (contact: your-email@example.com)"
@@ -122,6 +158,26 @@ def strip_case_number(account_number: str) -> str:
     here use the same shape, so one transform covers both rather than
     each COUNTY_CONFIGS entry duplicating it."""
     return account_number.strip().split("_")[0]
+
+
+def strip_case_number_and_leading_zeros(account_number: str) -> str:
+    """Lampasas's own account numbers are the same case-number-suffixed
+    shape as strip_case_number() handles, but zero-padded to 12 digits
+    ("000000000068_20289") where this site's own property id is the bare
+    number ("68") -- confirmed against all 9 real Lampasas listings still
+    missing a value: 9 (100%) matched once both the suffix and the
+    padding are stripped."""
+    stripped = account_number.strip().split("_")[0]
+    return str(int(stripped)) if stripped.isdigit() else stripped
+
+
+def strip_case_number_and_r_prefix(account_number: str) -> str:
+    """Medina's own account numbers are the same case-number-suffixed
+    shape too, but with an "R" prefix ("R11451_22-11-28049-CV") this
+    site's own property id doesn't carry. Confirmed against all 8 real
+    Medina listings still missing a value: 8 (100%) matched once both the
+    suffix and the "R" are stripped."""
+    return account_number.strip().split("_")[0].lstrip("Rr")
 
 
 COUNTY_CONFIGS = {
@@ -155,6 +211,14 @@ COUNTY_CONFIGS = {
     "Hays": {
         "domain": "esearch.hayscad.com",
         "normalize_id": strip_case_number,
+    },
+    "Lampasas": {
+        "domain": "esearch.lampasascad.com",
+        "normalize_id": strip_case_number_and_leading_zeros,
+    },
+    "Medina": {
+        "domain": "esearch.medinacad.org",
+        "normalize_id": strip_case_number_and_r_prefix,
     },
 }
 
@@ -190,7 +254,18 @@ def backfill_county(conn: combined_db.PgConnection, county: str) -> int:
     updated = 0
     for account_number in target_accounts:
         property_id = config["normalize_id"](account_number)
-        value = fetch_market_value(config["domain"], property_id)
+        try:
+            value = fetch_market_value(config["domain"], property_id)
+        except requests.RequestException as e:
+            # A handful of these small county sites have already shown up
+            # transiently flaky mid-run (a slow response, a dropped
+            # connection) -- same pattern as this project's other
+            # single-property/single-file fetchers (hcad_value_backfill.py,
+            # tdhca_scraper.py). One bad request skipping its own listing
+            # and moving on beats losing every other county's progress in
+            # the same run to an unhandled exception.
+            print(f"  {account_number}: request failed ({e}), skipping")
+            continue
         if value and value > 0:
             combined_db.update_estimated_value(conn, county, account_number, str(value))
             updated += 1

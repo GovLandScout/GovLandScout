@@ -57,12 +57,22 @@ FILENAME_COUNTY_PATTERN = re.compile(r"\d{3,4}_([A-Za-z]+)\.pdf$", re.IGNORECASE
 # internal capital in Texas county names like McLennan and McMullen.
 COUNTY_NAME_OVERRIDES = {"Mclennan": "McLennan", "Mcmullen": "McMullen"}
 ACCOUNT_PATTERN = re.compile(r"Account\s*#\s*([A-Za-z0-9]+)", re.IGNORECASE)
-CITATION_END_PATTERN = re.compile(r"\bTexas\)\s*,")
 # A second, explicit source for the same field, seen after "Judgment
 # Through Tax Year: ..." at the very end of the cell -- see
 # parse_description_cell's docstring for why this is a fallback, not the
 # primary source.
 APPROXIMATE_ADDRESS_PATTERN = re.compile(r"Approximate Address:\s*(.+)$", re.IGNORECASE)
+# Texas oil/gas royalty-interest tracts (confirmed: Rusk County) have no
+# street address at all -- there's nothing to geocode a fractional
+# interest in a well against -- and their citation-like tract text
+# ("...WELL 9 RRC 220978 681.27 AC" / "RRC# 185542") would otherwise get
+# mistaken for one by the address heuristic below, since it sits in
+# exactly the same "between the last citation and Account #" position a
+# real address does. RRC (the Railroad Commission of Texas, which
+# regulates oil/gas wells) is a reliable, specific marker for this
+# property type, confirmed present on every real mineral-interest
+# listing checked.
+MINERAL_INTEREST_PATTERN = re.compile(r"\bRRC\b|Royalty Interest", re.IGNORECASE)
 # The legal description almost always names the incorporated city a
 # platted parcel sits in ("...to the City of Abilene, Taylor County,
 # Texas..."), when it's in one at all -- used as a geocoding-city fallback
@@ -122,37 +132,59 @@ def parse_money(text: str | None) -> str | None:
 def parse_description_cell(text: str) -> tuple[str, str | None, str | None]:
     """
     'PROPERTY DESCRIPTION, APPROXIMATE ADDRESS, ACCT #' is one combined
-    cell. The address (when present) usually sits between the legal
-    description's closing deed citation ("...Texas),") and the "Account #"
-    marker -- but some counties (confirmed on real 2026-09 data: Taylor)
-    leave that gap empty and only give the address in a separate,
-    explicitly-labeled "Approximate Address: ..." field after "Judgment
-    Through Tax Year: ..." at the very end of the cell instead. Checking
-    that second field only when the first comes up empty, not
-    unconditionally: a few counties (confirmed: Comanche) redundantly
-    include both, and the primary one is the more complete of the two
-    there (full city/state/zip vs. just a bare street in the trailing
-    label) -- so the primary field wins whenever it's actually present.
-    Some counties (confirmed: Leon) have neither; that's a real "no
-    address published for this listing," not a parsing gap.
+    cell. The address (when present) sits between the legal description's
+    closing deed citation and the "Account #" marker -- anchored here on
+    that citation's own closing ")" (the last one before "Account #"),
+    not on a specific "...Texas)," shape: an earlier version of this
+    function required that exact literal, which worked for the counties
+    it was first confirmed against (Bosque, Rusk, Lampasas, Runnels) but
+    silently produced no address at all for two other real shapes since
+    confirmed in production -- Jasper's ALL CAPS citations ("...JASPER
+    COUNTY, TEXAS.)", both wrong-case and carrying a trailing period the
+    old pattern didn't allow for) and McLennan's, which don't restate the
+    county/state inside the citation at all ("...Texas (Volume 1801,
+    Page 688 OPR)"). Anchoring on the last ")" itself handles every shape
+    seen so far without needing to special-case each one -- confirmed
+    this doesn't regress the counties the original version already
+    handled correctly (none of their addresses contain a stray ")" of
+    their own).
+
+    Some counties (confirmed on real 2026-09 data: Taylor) leave that gap
+    empty and only give the address in a separate, explicitly-labeled
+    "Approximate Address: ..." field after "Judgment Through Tax Year:
+    ..." at the very end of the cell instead. Checking that second field
+    only when the first comes up empty, not unconditionally: a few
+    counties (confirmed: Comanche) redundantly include both, and the
+    primary one is the more complete of the two there (full
+    city/state/zip vs. just a bare street in the trailing label) -- so
+    the primary field wins whenever it's actually present. Some counties
+    (confirmed: Leon) have neither; that's a real "no address published
+    for this listing," not a parsing gap.
+
+    Oil/gas royalty-interest tracts (confirmed: Rusk) have no address at
+    all to find this way -- see MINERAL_INTEREST_PATTERN's own comment --
+    so this bails out before attempting either strategy for those,
+    rather than mistaking their own tract/well citation text for one.
     """
     joined = " ".join(l.strip() for l in text.split("\n") if l.strip())
     account_match = ACCOUNT_PATTERN.search(joined)
     account = account_match.group(1) if account_match else None
 
-    citation_matches = list(CITATION_END_PATTERN.finditer(joined))
-    if citation_matches and account_match:
-        citation_end = citation_matches[-1].end()
-        address = joined[citation_end:account_match.start()].strip().rstrip(",") or None
-        legal_description = joined[: citation_matches[-1].start() + len("Texas)")].strip()
-    else:
-        address = None
-        legal_description = joined
+    if MINERAL_INTEREST_PATTERN.search(joined):
+        return joined, None, account
+
+    address = None
+    legal_description = joined
+    if account_match:
+        last_paren_idx = joined.rfind(")", 0, account_match.start())
+        if last_paren_idx != -1:
+            address = joined[last_paren_idx + 1:account_match.start()].strip(" ,-") or None
+            legal_description = joined[: last_paren_idx + 1].strip()
 
     if not address:
         approx_match = APPROXIMATE_ADDRESS_PATTERN.search(joined)
         if approx_match:
-            address = approx_match.group(1).strip().rstrip(",") or None
+            address = approx_match.group(1).strip(" ,-") or None
 
     # A bare street from APPROXIMATE_ADDRESS_PATTERN has no city of its own
     # to geocode against -- geocode_backfill.py's fallback for a cityless
