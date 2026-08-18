@@ -19,10 +19,11 @@ the current GB architecture, including the uncertainty-quantification
 redesign that switch required (see "Uncertainty, not just a point
 estimate" below).
 
-Runs per state (see `states.py`) -- Texas and Pennsylvania currently,
-each with its own trained models, GeoJSON, and predictions file, served
-on their own `/market-trends` pages. Nothing about the modeling code is
-state-specific; adding a state is a config entry plus running the
+Runs per state (see `states.py`) -- Texas, Pennsylvania, and California
+currently, each with its own trained models, GeoJSON, and predictions
+file, served on their own `/market-trends` pages. Nothing about the
+modeling code is state-specific; adding a state is a config entry plus
+running the
 pipeline for it (see "Running it" below), not new code.
 
 ## Scope (Phase 1)
@@ -99,7 +100,7 @@ pipeline for it (see "Running it" below), not new code.
   and saves the deltas to `county_distress_calibration_{state}.json`;
   `generate_predictions.py` applies them before writing the `±` band.
   See "Uncertainty calibration" below for the before/after numbers.
-- **Not in scope yet**: per-property predictions, states beyond TX/PA,
+- **Not in scope yet**: per-property predictions, states beyond TX/PA/CA,
   GovLandScout's own scraped history as a feature (revisit once it has
   enough months behind it to matter).
 - **Now served on the live site, clearly labeled as experimental**: the

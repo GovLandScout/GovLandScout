@@ -1,13 +1,26 @@
 """
-GovLandScout - Bid4Assets Pennsylvania Tax Sale Scraper
+GovLandScout - Bid4Assets Tax Sale Scraper (Pennsylvania and California)
 
 Bid4Assets (bid4assets.com) is a commercial multi-state auction platform
-that several Pennsylvania county Tax Claim Bureaus use for repository and
-judicial tax sales -- a different relationship to this project than
-GovEase (see govease_scraper.py): GovEase server-renders its whole grid in
-one page load, but Bid4Assets is a JS-driven Kendo UI app, and the
-listings that actually matter (Address, Legal Description) live on a
-per-property detail page, not the list view.
+that several Pennsylvania county Tax Claim Bureaus, and several
+California county Treasurer-Tax Collectors, use for repository/judicial
+and tax-defaulted-property sales respectively -- a different
+relationship to this project than GovEase (see govease_scraper.py):
+GovEase server-renders its whole grid in one page load, but Bid4Assets
+is a JS-driven Kendo UI app, and the listings that actually matter
+(Address, Legal Description) live on a per-property detail page, not
+the list view.
+
+Both states' storefronts share the exact same discovery mechanism and
+page template -- confirmed directly on real data before adding
+California: its live storefronts follow the identical "<County> County,
+CA <Sale Type> Auction" naming shape PA's own storefronts do ("<County>
+County, PA Tax..."), just with a different state abbreviation -- so
+BID4ASSETS_STATES below and a state-parameterized discover_storefronts()
+cover both without needing two separate code paths. California has
+nothing like Philadelphia's own dedicated single-page listing --
+whichever county eventually needs one, if any do, gets the same kind of
+special case Philadelphia already has, not a rewrite of this shared path.
 
 Unlike every other source in this project, this one is fronted by an
 Akamai WAF (its own /robots.txt returns an Akamai "Access Denied" page
@@ -64,24 +77,26 @@ scraper in this project:
 Discovery is dynamic, not a hardcoded county list like govease_scraper.py's
 COUNTIES: bid4assets.com/county-tax-sales lists whichever county auctions
 happen to be open right now, and the storefront URL slug embeds the sale's
-own month/year (e.g. "MonroePATaxAug26"), so a hardcoded slug would go
-stale as soon as that auction closes. Every storefront whose listed name
-mentions ", PA" is scraped, each one contributing whatever properties its
-own auction currently has -- including several different storefronts for
-the same county (Monroe runs a new one most months), which is normal, not
-a bug: upsert_listing naturally collapses a re-listed parcel back onto the
-same row.
+own month/year (e.g. "MonroePATaxAug26", "ImperialFeb26"), so a hardcoded
+slug would go stale as soon as that auction closes. Every storefront whose
+listed name mentions the current state's own abbreviation (", PA", ", CA")
+is scraped, each one contributing whatever properties its own auction
+currently has -- including several different storefronts for the same
+county (Monroe, PA runs a new one most months; California counties often
+run a "...Re-offer Auction" storefront alongside their original one for
+the same sale), which is normal, not a bug: upsert_listing naturally
+collapses a re-listed parcel back onto the same row.
 
-Philadelphia runs through a dedicated /philataxsales page, not the
-storefront/collection system every other county here uses -- see
-fetch_philadelphia_listings's own docstring for the reverse-engineering
-(2026-08-12) and why it turned out simpler to scrape than the rest of
-this platform, not harder: every listing's data, including a
-ready-to-geocode address, is already embedded in that one page's initial
-HTML, no per-property detail fetch needed. Handled as its own step in
-main(), before the discovered storefronts, since it isn't discovered the
-same way (see discover_pa_storefronts's own docstring for why it never
-matches).
+Philadelphia (PA only, so far) runs through a dedicated /philataxsales
+page, not the storefront/collection system every other county here uses
+-- see fetch_philadelphia_listings's own docstring for the
+reverse-engineering (2026-08-12) and why it turned out simpler to scrape
+than the rest of this platform, not harder: every listing's data,
+including a ready-to-geocode address, is already embedded in that one
+page's initial HTML, no per-property detail fetch needed. Handled as its
+own step in main(), before the discovered storefronts, since it isn't
+discovered the same way (see discover_storefronts's own docstring for
+why it never matches).
 
 Two more structural things worth knowing before touching this file:
 
@@ -140,34 +155,59 @@ HEADERS = {
                   "(KHTML, like Gecko) Chrome/120.0 Safari/537.36",
 }
 
-STOREFRONT_LINK_PATTERN = re.compile(
-    r'<a[^>]+href="(/storefront/[^"]+)"[^>]*>([^<]*County,?\s+PA[^<]*)</a>', re.IGNORECASE,
-)
-COUNTY_NAME_PATTERN = re.compile(r"^([A-Za-z]+)\s+County,?\s+PA\b", re.IGNORECASE)
+BID4ASSETS_STATES = ["PA", "CA"]
+
+
+def storefront_link_pattern(state_abbrev: str) -> re.Pattern:
+    return re.compile(
+        rf'<a[^>]+href="(/storefront/[^"]+)"[^>]*>([^<]*County,?\s+{state_abbrev}[^<]*)</a>', re.IGNORECASE,
+    )
+
+
+def county_name_pattern(state_abbrev: str) -> re.Pattern:
+    return re.compile(rf"^([A-Za-z]+)\s+County,?\s+{state_abbrev}\b", re.IGNORECASE)
+
 
 STOREFRONT_ID_PATTERN = re.compile(r"getauctiondisplay/(\d+)\?storefrontCollectionId=")
 COLLECTIONS_BLOB_PATTERN = re.compile(r'"data":\{"Data":(\[.*?\]),"Total":\d+\}')
 
 # Matches every label variant seen across counties during development --
 # "PIN:", "APN:", "Parcel:", "Parcel: " (with a space before the colon),
-# or no label at all (Cumberland). Whatever's left after stripping the
-# label (if present) is the parcel/account identifier.
-ACCOUNT_NUMBER_PATTERN = re.compile(
-    r"Tax:\s*(?:(?:PIN|APN|Parcel)\s*:\s*)?(.+)$", re.IGNORECASE,
-)
+# or no label at all (Cumberland, PA). Whatever's left after stripping
+# the label (if present) is the parcel/account identifier. Checked
+# first, independent of LABELED-vs-bare "Tax:" below: California's own
+# titles ("Imperial County, CA: APN:  001-101-008-000") carry a PIN/APN/
+# Parcel label same as PA's do, but never the word "Tax:" at all --
+# confirmed directly against real storefronts before adding CA support,
+# not assumed from PA's own shape.
+LABELED_ACCOUNT_PATTERN = re.compile(r"(?:PIN|APN|Parcel)\s*:\s*(.+)$", re.IGNORECASE)
+# Fallback for the labelless PA shape above -- "<county> County, PA
+# Tax: 123" -- everything after "Tax:" with no PIN/APN/Parcel label of
+# its own. Only reached when the labeled pattern above doesn't match.
+BARE_TAX_ACCOUNT_PATTERN = re.compile(r"Tax:\s*(.+)$", re.IGNORECASE)
 
+# "withdrawn" only ever showed up in California's own asset_title text
+# ("***Withdrawn***Shasta County, CA: APN: ..."), never in the
+# `remaining` field is_still_available() otherwise checks -- confirmed
+# directly: a real withdrawn CA listing's own `remaining` field read
+# "0 sec", not any of the other keywords below, so this needed its own
+# check against the title, not just a fourth keyword added to the
+# existing remaining-field check.
 INACTIVE_KEYWORDS = ("sold", "closed", "cancel")
+WITHDRAWN_KEYWORD = "withdrawn"
 
 
-def discover_pa_storefronts(html: str) -> list[tuple[str, str]]:
+def discover_storefronts(html: str, state_abbrev: str) -> list[tuple[str, str]]:
     """(county, storefront_slug) for every current Bid4Assets auction whose
-    listed name mentions Pennsylvania. Philadelphia is deliberately excluded
-    here -- see module docstring -- since its listing text says
-    "Philadelphia Tax Sales", not "<County> County, PA", so it never
-    matches COUNTY_NAME_PATTERN in the first place."""
+    listed name mentions the given state's own abbreviation. Philadelphia
+    is deliberately excluded here for PA -- see module docstring -- since
+    its listing text says "Philadelphia Tax Sales", not "<County> County,
+    PA", so it never matches county_name_pattern() in the first place."""
     storefronts = []
-    for href, label in STOREFRONT_LINK_PATTERN.findall(html):
-        match = COUNTY_NAME_PATTERN.match(label.strip())
+    link_pattern = storefront_link_pattern(state_abbrev)
+    name_pattern = county_name_pattern(state_abbrev)
+    for href, label in link_pattern.findall(html):
+        match = name_pattern.match(label.strip())
         if not match:
             continue
         slug = href.rsplit("/", 1)[-1]
@@ -209,14 +249,20 @@ def fetch_collection_auctions(session: requests.Session, storefront_id: int, col
 
 def is_still_available(row: dict) -> bool:
     remaining = (row.get("remaining") or "").lower()
-    return not any(keyword in remaining for keyword in INACTIVE_KEYWORDS)
+    title = (row.get("asset_title") or "").lower()
+    if any(keyword in remaining for keyword in INACTIVE_KEYWORDS):
+        return False
+    return WITHDRAWN_KEYWORD not in title
 
 
 def extract_account_number(asset_title: str) -> str:
     """Falls back to the raw title (rather than dropping the row) if a
     future title format doesn't match any known shape -- every listing
     needs to survive even a format this hasn't seen before."""
-    match = ACCOUNT_NUMBER_PATTERN.search(asset_title)
+    match = LABELED_ACCOUNT_PATTERN.search(asset_title)
+    if match:
+        return match.group(1).strip()
+    match = BARE_TAX_ACCOUNT_PATTERN.search(asset_title)
     return match.group(1).strip() if match else asset_title.strip()
 
 
@@ -259,7 +305,7 @@ def fetch_philadelphia_listings(session: requests.Session) -> list[dict]:
     not the storefront/collection system every other county here uses --
     confirmed directly before writing this: its own listing text says
     "Philadelphia Tax Sales", not "<County> County, PA", so it never
-    matched discover_pa_storefronts's COUNTY_NAME_PATTERN in the first
+    matched discover_storefronts's county_name_pattern() in the first
     place (see that function's docstring). Turns out to be much simpler to
     scrape than the rest of this platform, not harder: the page embeds
     every current listing's full data -- including a ready-to-geocode
@@ -289,6 +335,7 @@ def fetch_philadelphia_listings(session: requests.Session) -> list[dict]:
             continue
         minimum_bid = row.get("MinimumBid")
         listings.append({
+            "state": "PA",
             "county": "Philadelphia",
             "account_number": str(account_number),
             "auction_id": auction_id,
@@ -304,6 +351,7 @@ def init_db(conn: sqlite3.Connection):
     conn.execute("""
         CREATE TABLE IF NOT EXISTS bid4assets_properties (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
+            state TEXT,
             county TEXT,
             account_number TEXT,
             auction_id INTEGER,
@@ -315,9 +363,19 @@ def init_db(conn: sqlite3.Connection):
             last_seen TEXT
         )
     """)
+    # (county, account_number) alone was a safe uniqueness key back when
+    # this only ever scraped Pennsylvania -- adding California makes it a
+    # real collision risk (both states have their own Orange County, for
+    # one), the same reasoning combined_db's own state-aware keys already
+    # apply elsewhere in this project (see update_estimated_value's
+    # docstring). Recreating the index under its new name rather than
+    # ALTERing the old one -- this local file is gitignored and rebuilt
+    # from scratch by every fresh checkout anyway (see module docstring),
+    # so there's no real "existing installs" migration to write for it.
+    conn.execute("DROP INDEX IF EXISTS idx_bid4assets_county_account")
     conn.execute("""
-        CREATE UNIQUE INDEX IF NOT EXISTS idx_bid4assets_county_account
-        ON bid4assets_properties(county, account_number)
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_bid4assets_state_county_account
+        ON bid4assets_properties(state, county, account_number)
     """)
     conn.commit()
 
@@ -325,8 +383,8 @@ def init_db(conn: sqlite3.Connection):
 def upsert_local(conn: sqlite3.Connection, listing: dict):
     now = datetime.now(timezone.utc).isoformat()
     existing = conn.execute(
-        "SELECT id FROM bid4assets_properties WHERE county = ? AND account_number = ?",
-        (listing["county"], listing["account_number"]),
+        "SELECT id FROM bid4assets_properties WHERE state = ? AND county = ? AND account_number = ?",
+        (listing["state"], listing["county"], listing["account_number"]),
     ).fetchone()
 
     fields = (
@@ -338,16 +396,16 @@ def upsert_local(conn: sqlite3.Connection, listing: dict):
             """UPDATE bid4assets_properties SET
                 auction_id = ?, minimum_bid = ?, address = ?, description = ?,
                 source_url = ?, last_seen = ?
-               WHERE county = ? AND account_number = ?""",
-            fields + (now, listing["county"], listing["account_number"]),
+               WHERE state = ? AND county = ? AND account_number = ?""",
+            fields + (now, listing["state"], listing["county"], listing["account_number"]),
         )
     else:
         conn.execute(
             """INSERT INTO bid4assets_properties (
                 auction_id, minimum_bid, address, description, source_url,
-                county, account_number, first_seen, last_seen
-               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            fields + (listing["county"], listing["account_number"], now, now),
+                state, county, account_number, first_seen, last_seen
+               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            fields + (listing["state"], listing["county"], listing["account_number"], now, now),
         )
     conn.commit()
 
@@ -374,7 +432,7 @@ def store_listings(conn: sqlite3.Connection, listings: list[dict]) -> int:
             status="Active",
             source="bid4assets.com",
             source_url=listing["source_url"],
-            state="PA",
+            state=listing["state"],
             commit=False,  # see combined_db.upsert_listing's docstring -- committing per-row across
                             # potentially thousands of listings is what already blew a timeout for LGBS
         )
@@ -399,86 +457,89 @@ def main():
     print(f"Fetching {COUNTY_SALES_URL} ...")
     resp = session.get(COUNTY_SALES_URL, headers=HEADERS, timeout=30)
     resp.raise_for_status()
-    storefronts = discover_pa_storefronts(resp.text)
-    print(f"Found {len(storefronts)} PA storefront(s): {storefronts}")
 
     consecutive_detail_failures = 0
     circuit_tripped = False
 
-    for i, (county, slug) in enumerate(storefronts):
-        if i > 0:
+    for state in BID4ASSETS_STATES:
+        storefronts = discover_storefronts(resp.text, state)
+        print(f"Found {len(storefronts)} {state} storefront(s): {storefronts}")
+
+        for i, (county, slug) in enumerate(storefronts):
             time.sleep(LIST_API_DELAY_SECONDS)
 
-        storefront_resp = session.get(f"{BASE_URL}/storefront/{slug}", headers=HEADERS, timeout=30)
-        if storefront_resp.status_code != 200:
-            print(f"  {county} ({slug}): storefront page fetch failed")
-            continue
+            storefront_resp = session.get(f"{BASE_URL}/storefront/{slug}", headers=HEADERS, timeout=30)
+            if storefront_resp.status_code != 200:
+                print(f"  {county}, {state} ({slug}): storefront page fetch failed")
+                continue
 
-        parsed = parse_storefront_collections(storefront_resp.text)
-        if parsed is None:
-            print(f"  {county} ({slug}): couldn't find storefront/collection IDs -- site template may have changed")
-            continue
-        storefront_id, collection_ids = parsed
+            parsed = parse_storefront_collections(storefront_resp.text)
+            if parsed is None:
+                print(f"  {county}, {state} ({slug}): couldn't find storefront/collection IDs "
+                      f"-- site template may have changed")
+                continue
+            storefront_id, collection_ids = parsed
 
-        rows = []
-        for collection_id in collection_ids:
-            rows.extend(fetch_collection_auctions(session, storefront_id, collection_id))
-            time.sleep(LIST_API_DELAY_SECONDS)
+            rows = []
+            for collection_id in collection_ids:
+                rows.extend(fetch_collection_auctions(session, storefront_id, collection_id))
+                time.sleep(LIST_API_DELAY_SECONDS)
 
-        active_rows = [r for r in rows if is_still_available(r)]
-        print(f"  {county} ({slug}): {len(rows)} listing(s), {len(active_rows)} still available")
-        if not active_rows:
-            continue
+            active_rows = [r for r in rows if is_still_available(r)]
+            print(f"  {county}, {state} ({slug}): {len(rows)} listing(s), {len(active_rows)} still available")
+            if not active_rows:
+                continue
 
-        account_numbers = [extract_account_number(r.get("asset_title", "")) for r in active_rows]
+            account_numbers = [extract_account_number(r.get("asset_title", "")) for r in active_rows]
 
-        # Phase 1 (DB, fast): one bulk read for the whole county, connection
-        # closed immediately after -- see module docstring and
-        # fetch_cached_enrichment_bulk's own docstring for why this isn't
-        # one query per listing anymore.
-        read_conn = combined_db.get_connection()
-        cached = combined_db.fetch_cached_enrichment_bulk(read_conn, "PA", county, account_numbers)
-        read_conn.close()
+            # Phase 1 (DB, fast): one bulk read for the whole county, connection
+            # closed immediately after -- see module docstring and
+            # fetch_cached_enrichment_bulk's own docstring for why this isn't
+            # one query per listing anymore.
+            read_conn = combined_db.get_connection()
+            cached = combined_db.fetch_cached_enrichment_bulk(read_conn, state, county, account_numbers)
+            read_conn.close()
 
-        # Phase 2 (network, slow): every rate-limited HTTP request happens
-        # here, with NO database connection open at all for the whole
-        # phase -- this is the part that can run for tens of minutes on a
-        # large county, and it now touches the database exactly zero times
-        # while doing so.
-        listings = []
-        for row, account_number in zip(active_rows, account_numbers):
-            auction_id = row.get("auctionID")
-            minimum_bid = row.get("minimumBid")
-            address, description = cached.get(account_number, (None, None))
+            # Phase 2 (network, slow): every rate-limited HTTP request happens
+            # here, with NO database connection open at all for the whole
+            # phase -- this is the part that can run for tens of minutes on a
+            # large county, and it now touches the database exactly zero times
+            # while doing so.
+            listings = []
+            for row, account_number in zip(active_rows, account_numbers):
+                auction_id = row.get("auctionID")
+                minimum_bid = row.get("minimumBid")
+                address, description = cached.get(account_number, (None, None))
 
-            if address is None and not circuit_tripped:
-                detail = fetch_auction_detail(session, auction_id)
-                time.sleep(DETAIL_FETCH_DELAY_SECONDS)
-                if detail is None:
-                    consecutive_detail_failures += 1
-                    if consecutive_detail_failures >= MAX_CONSECUTIVE_DETAIL_FAILURES:
-                        circuit_tripped = True
-                        print(f"    {MAX_CONSECUTIVE_DETAIL_FAILURES} detail fetches failed in a row -- "
-                              f"stopping address lookups for the rest of this run")
-                else:
-                    consecutive_detail_failures = 0
-                    address = detail["address"]
-                    description = detail["legal_description"]
+                if address is None and not circuit_tripped:
+                    detail = fetch_auction_detail(session, auction_id)
+                    time.sleep(DETAIL_FETCH_DELAY_SECONDS)
+                    if detail is None:
+                        consecutive_detail_failures += 1
+                        if consecutive_detail_failures >= MAX_CONSECUTIVE_DETAIL_FAILURES:
+                            circuit_tripped = True
+                            print(f"    {MAX_CONSECUTIVE_DETAIL_FAILURES} detail fetches failed in a row -- "
+                                  f"stopping address lookups for the rest of this run")
+                    else:
+                        consecutive_detail_failures = 0
+                        address = detail["address"]
+                        description = detail["legal_description"]
 
-            listings.append({
-                "county": county,
-                "account_number": account_number,
-                "auction_id": auction_id,
-                "minimum_bid": str(minimum_bid) if minimum_bid is not None else None,
-                "address": address,
-                "description": description,
-                "source_url": f"{BASE_URL}/auction/{auction_id}" if auction_id else None,
-            })
+                listings.append({
+                    "state": state,
+                    "county": county,
+                    "account_number": account_number,
+                    "auction_id": auction_id,
+                    "minimum_bid": str(minimum_bid) if minimum_bid is not None else None,
+                    "address": address,
+                    "description": description,
+                    "source_url": f"{BASE_URL}/auction/{auction_id}" if auction_id else None,
+                })
 
-        # Phase 3 (DB, fast): see store_listings's own docstring -- there is
-        # no sleep() anywhere in this phase, so it runs in seconds, not
-        # minutes, regardless of how large the county's batch is.
-        total_stored += store_listings(conn, listings)
+            # Phase 3 (DB, fast): see store_listings's own docstring -- there is
+            # no sleep() anywhere in this phase, so it runs in seconds, not
+            # minutes, regardless of how large the county's batch is.
+            total_stored += store_listings(conn, listings)
 
     conn.close()
     print(f"\n{total_stored} listing(s) stored into {DB_PATH}")

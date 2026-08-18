@@ -1,15 +1,16 @@
-name: Scheduled scrape (Bid4Assets PA)
+name: Scheduled scrape (Bid4Assets PA + CA)
 
 # Bid4Assets (see bid4assets_scraper.py's own docstring) is deliberately
 # NOT part of run_daily_scrapers.py / scrape.yml's daily batch: fetching a
 # real address for every property (its list view doesn't include one)
-# across several PA counties running into the thousands of listings does
-# not fit that job's shared ~35-minute budget, and this source is fronted
-# by a WAF with no accessible robots.txt to size a safe request pace
-# against, so it paces itself much more conservatively than any other
-# scraper here. Runs weekly rather than daily -- these are repository/
-# judicial sales, not something that turns over day to day, and it skips
-# re-fetching a property's address once combined_db already has it (see
+# across several PA and CA counties running into the thousands of
+# listings does not fit that job's shared ~35-minute budget, and this
+# source is fronted by a WAF with no accessible robots.txt to size a safe
+# request pace against, so it paces itself much more conservatively than
+# any other scraper here. Runs weekly rather than daily -- these are
+# repository/judicial (PA) or tax-defaulted-property (CA) sales, not
+# something that turns over day to day, and it skips re-fetching a
+# property's address once combined_db already has it (see
 # combined_db.fetch_cached_enrichment) -- only genuinely new parcels cost
 # a real detail-page request on any run after the first.
 #
@@ -30,10 +31,11 @@ jobs:
     runs-on: ubuntu-latest
     # Generous on purpose: an initial/cold run can mean several thousand
     # rate-limited (DETAIL_FETCH_DELAY_SECONDS-paced) detail-page fetches
-    # across every PA county currently listed. Later runs are much faster
-    # once most addresses are cached locally, but this budget is sized for
-    # the slow case, not the steady-state one.
-    timeout-minutes: 180
+    # across every PA and CA county currently listed. Later runs are much
+    # faster once most addresses are cached locally, but this budget is
+    # sized for the slow case, not the steady-state one -- bumped from
+    # 180 when CA was added on top of PA's own already-generous budget.
+    timeout-minutes: 240
     steps:
       - uses: actions/checkout@v4
 
@@ -44,7 +46,7 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Run Bid4Assets PA scraper
+      - name: Run Bid4Assets PA + CA scraper
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           # Python fully buffers stdout when it isn't attached to a

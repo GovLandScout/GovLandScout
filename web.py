@@ -92,6 +92,7 @@ MODEL_PUBLIC_DIR = Path(__file__).resolve().parent / "model" / "public"
 MARKET_TRENDS_STATES = [
     {"key": "tx", "name": "Texas", "route": "/market-trends", "nav_key": "market-trends-tx"},
     {"key": "pa", "name": "Pennsylvania", "route": "/market-trends-pa", "nav_key": "market-trends-pa"},
+    {"key": "ca", "name": "California", "route": "/market-trends-ca", "nav_key": "market-trends-ca"},
 ]
 
 
@@ -495,8 +496,10 @@ def nav_html(active: str) -> str:
         ("/", "home", "Home"),
         ("/market-trends", "market-trends-tx", "Market Trends: TX (Experimental)"),
         ("/market-trends-pa", "market-trends-pa", "Market Trends: PA (Experimental)"),
+        ("/market-trends-ca", "market-trends-ca", "Market Trends: CA (Experimental)"),
         ("/numbers", "numbers-tx", "Numbers: TX"),
         ("/numbers-pa", "numbers-pa", "Numbers: PA"),
+        ("/numbers-ca", "numbers-ca", "Numbers: CA"),
         ("/investment-info", "investment", "Investment Info"),
         ("/manual-upload", "manual-upload", "Manual property uploads"),
         ("/about", "about", "About & Contact"),
@@ -558,7 +561,7 @@ def page_shell(title: str, active: str, body: str, extra_head: str = "") -> str:
     <head>
       <meta charset="utf-8" />
       <meta name="viewport" content="width=device-width, initial-scale=1" />
-      <meta name="description" content="A searchable, mappable record of real estate being sold by government entities across Texas and Pennsylvania -- county tax sales, federal and state surplus, HUD foreclosures, and land bank listings." />
+      <meta name="description" content="A searchable, mappable record of real estate being sold by government entities across Texas, Pennsylvania, and California -- county tax sales, federal and state surplus, HUD foreclosures, and land bank listings." />
       <title>{title}</title>
       {extra_head}
       <style>{PAGE_CSS}</style>
@@ -685,7 +688,7 @@ def deals_page():
 
     body = f"""
       <h1>GovLandScout - Distressed Property Finder</h1>
-      <p class="subtitle">GovLandScout is a project attempting to show a listing of all property being sold by the government, currently covering Texas and Pennsylvania, to try to help combat rising home prices and a lack of housing affordability. {total_count} total listings across all sources, shown below in random order -- use "Sort by" to rank by equity, estimated value, or minimum bid instead. {priced_count} have a full equity calculation; listings without one still show, just with "{NO_DATA}" where a field doesn't apply.</p>
+      <p class="subtitle">GovLandScout is a project attempting to show a listing of all property being sold by the government, currently covering Texas, Pennsylvania, and California, to try to help combat rising home prices and a lack of housing affordability. {total_count} total listings across all sources, shown below in random order -- use "Sort by" to rank by equity, estimated value, or minimum bid instead. {priced_count} have a full equity calculation; listings without one still show, just with "{NO_DATA}" where a field doesn't apply.</p>
 
       <div class="controls card">
         <div class="control">
@@ -1552,6 +1555,11 @@ def market_trends_pa_page():
     return render_market_trends_page(MARKET_TRENDS_STATES[1])
 
 
+@app.get("/market-trends-ca", response_class=HTMLResponse)
+def market_trends_ca_page():
+    return render_market_trends_page(MARKET_TRENDS_STATES[2])
+
+
 
 # key is uppercase to match listings.state directly (unlike
 # MARKET_TRENDS_STATES's lowercase key, which is a model/public/ filename
@@ -1560,6 +1568,7 @@ def market_trends_pa_page():
 NUMBERS_STATES = [
     {"key": "TX", "name": "Texas", "route": "/numbers", "nav_key": "numbers-tx"},
     {"key": "PA", "name": "Pennsylvania", "route": "/numbers-pa", "nav_key": "numbers-pa"},
+    {"key": "CA", "name": "California", "route": "/numbers-ca", "nav_key": "numbers-ca"},
 ]
 
 # Friendly labels for the raw `source` domains stored per listing --
@@ -1579,7 +1588,8 @@ SOURCE_LABELS = {
     "guadalupetx.gov": "Guadalupe County (self-published)",
     "govease.com": "GovEase (county tax sale platform -- TX Sheriff/Constable sales, PA Upset/Judicial sales)",
     "collincountytx.gov": "Collin County Constable Sales (self-published)",
-    "bid4assets.com": "Bid4Assets (PA county tax sale platform -- Upset/Judicial/Repository sales)",
+    "bid4assets.com": "Bid4Assets (PA county tax sale platform -- Upset/Judicial/Repository sales; "
+                       "also CA county tax-defaulted property auctions)",
     "montgomerycountypa.gov": "Montgomery County Tax Claim Bureau (self-published)",
     "chesco.org": "Chester County Tax Claim Bureau (self-published)",
     "manual": "User-submitted (unverified)",
@@ -1625,12 +1635,17 @@ def render_numbers_page(state: dict) -> str:
         for s in sources
     ) or '<li class="nodata">No sources tracked for this state yet.</li>'
 
-    other_state = next(s for s in NUMBERS_STATES if s is not state)
+    # A plain "the other one" link only worked back when there were
+    # exactly two states -- with three, this needs to actually join a
+    # list rather than assume a single next().
+    other_states = [s for s in NUMBERS_STATES if s is not state]
+    other_links = [f'<a href="{s["route"]}">{s["name"]}\'s numbers</a>' for s in other_states]
+    other_states_text = " or ".join(other_links)
 
     body = f"""
       <h1>Numbers: {state['name']}</h1>
       <p class="subtitle">Pulled straight from the database each time this page loads, so what you see below is current, not a snapshot from whenever someone last refreshed it.
-         Looking for <a href="{other_state['route']}">{other_state['name']}'s numbers</a> instead?</p>
+         Looking for {other_states_text} instead?</p>
 
       <div class="stats-grid">{stat_cards}</div>
 
@@ -1659,6 +1674,11 @@ def numbers_tx_page():
 @app.get("/numbers-pa", response_class=HTMLResponse)
 def numbers_pa_page():
     return render_numbers_page(NUMBERS_STATES[1])
+
+
+@app.get("/numbers-ca", response_class=HTMLResponse)
+def numbers_ca_page():
+    return render_numbers_page(NUMBERS_STATES[2])
 
 
 @app.get("/investment-info", response_class=HTMLResponse)
@@ -1713,6 +1733,30 @@ def investment_info_page():
            right of redemption if the former owner pays off what's owed. Whether that exception applies, and the
            exact terms either way, is set by each county's own Tax Claim Bureau -- confirm directly with them, and
            with an attorney, before bidding; this page is a starting point, not the statute.</p>
+
+        <h2>California county tax-defaulted property sales</h2>
+        <p>Run under California's Revenue and Taxation Code (Division 1, Part 6, Chapter 7) -- a third distinct
+           statutory scheme from either Texas's Tax Code or Pennsylvania's Real Estate Tax Sale Law. A property
+           becomes eligible for sale once its taxes have been in default for five years (Rev. &amp; Tax. Code
+           &sect;3691; a shorter three years applies to certain nonresidential commercial property under the same
+           section -- confirm which applies to a specific parcel, don't assume). At that point the county Tax
+           Collector gains the power to sell it and can offer it at public auction, increasingly run online --
+           several California counties on this site sell through Bid4Assets, the same platform several
+           Pennsylvania counties here also use.</p>
+        <p>The deed you get is a <b>Tax Collector's Deed to Purchaser</b>, and unlike Texas's Sheriff's/Constable's
+           Deed, it conveys title free and clear of most liens and encumbrances that existed before the sale
+           (Rev. &amp; Tax. Code &sect;3712) -- not an unconditional guarantee, though: recorded easements and
+           restrictive covenants, assessments not yet due, IRS liens (which carry their own separate federal
+           post-sale redemption right), and some special-district or Mello-Roos assessment liens can survive
+           regardless. Confirm what specifically does and doesn't get wiped for a given parcel before you bid.</p>
+        <p>The redemption period runs the opposite direction from Texas and Pennsylvania's post-sale windows: in
+           California, the former owner's right to redeem <i>ends</i> at the close of business the last business
+           day before the auction, not after. Once your winning bid is accepted and payment clears, the sale is
+           final -- there's no window afterward where the previous owner can buy the property back from you.</p>
+        <p>Payment is due fast, typically within a few business days of the auction closing (exact timing depends
+           on the county and the platform), by cashier's check, wire, or ACH -- financing isn't part of this
+           process. As with the other sale types on this page, confirm current rules with the specific county's
+           Tax Collector, or with an attorney, before bidding.</p>
 
         <h2>Federal surplus real estate (GSA)</h2>
         <p>Every so often the federal government decides it doesn't need a piece of property anymore and sells it
@@ -1813,6 +1857,7 @@ def manual_upload_form_html(banner: str = "") -> str:
             <select id="state" name="state" required>
               <option value="TX">Texas</option>
               <option value="PA">Pennsylvania</option>
+              <option value="CA">California</option>
             </select>
           </div>
         </div>
@@ -1926,8 +1971,10 @@ def manual_upload_submit(
         return RedirectResponse("/manual-upload?error=County is required.", status_code=303)
 
     state = state.strip().upper()
-    if state not in ("TX", "PA"):
-        return RedirectResponse("/manual-upload?error=State must be Texas or Pennsylvania.", status_code=303)
+    if state not in ("TX", "PA", "CA"):
+        return RedirectResponse(
+            "/manual-upload?error=State must be Texas, Pennsylvania, or California.", status_code=303,
+        )
 
     if not source_url:
         return RedirectResponse(
@@ -2017,16 +2064,17 @@ def about_page():
 
       <div class="card prose" style="padding: 1.5rem 1.75rem; margin-bottom: 1.5rem;">
         <h2>What this is</h2>
-        <p>GovLandScout aggregates real estate being sold by government entities across Texas and Pennsylvania --
-           county tax foreclosure sales, federal and state surplus property, HUD-owned foreclosed homes, and
-           Veterans Land Board tracts -- into one searchable, mappable place. Rising home prices and limited housing
-           affordability make it harder to find a way in; these listings are already public, just scattered
-           across dozens of separate county, state, and federal sites. This project pulls them together.</p>
+        <p>GovLandScout aggregates real estate being sold by government entities across Texas, Pennsylvania, and
+           California -- county tax foreclosure sales, federal and state surplus property, HUD-owned foreclosed
+           homes, and Veterans Land Board tracts -- into one searchable, mappable place. Rising home prices and
+           limited housing affordability make it harder to find a way in; these listings are already public, just
+           scattered across dozens of separate county, state, and federal sites. This project pulls them together.</p>
 
         <h2>How it works</h2>
         <p>A set of scrapers run on a daily schedule, each pulling directly from an official or government-retained
-           source (see the Numbers pages for <a href="/numbers">Texas</a> and <a href="/numbers-pa">Pennsylvania</a>
-           for the full list per state), normalizing everything into one shared database. Nothing here is
+           source (see the Numbers pages for <a href="/numbers">Texas</a>, <a href="/numbers-pa">Pennsylvania</a>,
+           and <a href="/numbers-ca">California</a> for the full list per state), normalizing everything into one
+           shared database. Nothing here is
            editorialized -- prices, descriptions, and account numbers are shown as published by the source, and
            every listing links back to where it came from so you can verify it yourself before bidding on anything.</p>
 

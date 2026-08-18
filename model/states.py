@@ -12,4 +12,5 @@ ever the state filter and county-boundary source that were.
 STATES = {
     "tx": {"name": "Texas", "abbrev": "TX", "fips": "48"},
     "pa": {"name": "Pennsylvania", "abbrev": "PA", "fips": "42"},
+    "ca": {"name": "California", "abbrev": "CA", "fips": "06"},
 }
