@@ -423,8 +423,12 @@ def init_db(conn: sqlite3.Connection):
     # names aren't guaranteed unique across states, same reasoning as
     # combined_db.py's own identical migration. DEFAULT 'TX' backfills
     # every existing row correctly since every county scraped here before
-    # this was Texas-only.
-    conn.execute("ALTER TABLE realauction_properties ADD COLUMN IF NOT EXISTS state TEXT NOT NULL DEFAULT 'TX'")
+    # this was Texas-only. SQLite's ALTER TABLE has no ADD COLUMN IF NOT
+    # EXISTS (unlike the Postgres this mirrors in combined_db.py), so the
+    # existing-columns check is done by hand instead.
+    existing_columns = {row[1] for row in conn.execute("PRAGMA table_info(realauction_properties)")}
+    if "state" not in existing_columns:
+        conn.execute("ALTER TABLE realauction_properties ADD COLUMN state TEXT NOT NULL DEFAULT 'TX'")
     conn.execute("DROP INDEX IF EXISTS idx_realauction_county_account")
     conn.execute("""
         CREATE UNIQUE INDEX IF NOT EXISTS idx_realauction_state_county_account
