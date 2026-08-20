@@ -37,6 +37,13 @@ SCRAPERS = [
     # Sits behind a WAF unlike every other source here (see that module's own docstring); a
     # failed fetch is treated as "try again tomorrow" internally, not a crash, so a blocked day
     # just shows up as one failed row in scrape_runs rather than taking the rest of the batch down.
+    "mytaxsale_scraper.py",  # seven CA counties, all empty right now (see that module's own
+    # docstring) so today this is just 7 quick GET/POST pairs. Kept in the daily batch rather
+    # than pulled out like bid4assets_scraper.py: unlike PA's perpetually-active storefronts
+    # there, each of these counties' auctions is only actually open ~1 week a year, so even
+    # a full per-item detail-fetch pass (hundreds of requests, San Diego's own #49 alone had
+    # 546) is a short-lived cost, not a standing one. Revisit if a real open auction here ever
+    # does push a daily run over its timeout.
 ]
 
 # Kept short -- this ends up in a DB row and eventually the bell's
