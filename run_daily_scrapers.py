@@ -44,6 +44,8 @@ SCRAPERS = [
     # a full per-item detail-fetch pass (hundreds of requests, San Diego's own #49 alone had
     # 546) is a short-lived cost, not a standing one. Revisit if a real open auction here ever
     # does push a daily run over its timeout.
+    "placer_scraper.py",  # one plain HTML page, no rate-limiting -- fast enough for the daily
+    # batch too, same as chester_scraper.py/montco_scraper.py's own self-published pages.
 ]
 
 # Kept short -- this ends up in a DB row and eventually the bell's

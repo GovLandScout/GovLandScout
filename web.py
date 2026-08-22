@@ -1598,6 +1598,7 @@ SOURCE_LABELS = {
     "mytaxsale.com": "Grant Street Group DeedAuction (CA county tax-defaulted property "
                       "and timeshare auctions -- San Diego, Sacramento, San Francisco, "
                       "San Bernardino, San Mateo, Orange, Solano)",
+    "placer.ca.gov": "Placer County Tax Land Sale (self-published, in-person auction only)",
     "manual": "User-submitted (unverified)",
 }
 
