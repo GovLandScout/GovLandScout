@@ -1583,17 +1583,21 @@ SOURCE_LABELS = {
     "glo.texas.gov": "Texas Veterans Land Board",
     "hudgis-hud.opendata.arcgis.com": "HUD Foreclosed Homes (Open Data)",
     "houstontx.gov": "City of Houston Real Property",
-    "publicsurplus.com": "PublicSurplus (Texas government sellers)",
+    "publicsurplus.com": "PublicSurplus (TX and CA government surplus real estate)",
     "realauction.com": "RealAuction/RealForeclose (TX Sheriff & Constable tax sales; "
                         "PA county Sheriff Sales, mostly mortgage foreclosure)",
     "guadalupetx.gov": "Guadalupe County (self-published)",
-    "govease.com": "GovEase (county tax sale platform -- TX Sheriff/Constable sales, PA Upset/Judicial sales)",
+    "govease.com": "GovEase (county tax sale platform -- TX Sheriff/Constable sales, "
+                    "PA Upset/Judicial sales, CA county tax-defaulted property auctions)",
     "collincountytx.gov": "Collin County Constable Sales (self-published)",
     "bid4assets.com": "Bid4Assets (PA county tax sale platform -- Upset/Judicial/Repository sales; "
                        "also CA county tax-defaulted property auctions)",
     "montgomerycountypa.gov": "Montgomery County Tax Claim Bureau (self-published)",
     "chesco.org": "Chester County Tax Claim Bureau (self-published)",
     "sheriffalleghenycounty.com": "Allegheny County Sheriff Sales (mortgage foreclosure, tax lien, and municipal lien, self-published)",
+    "mytaxsale.com": "Grant Street Group DeedAuction (CA county tax-defaulted property "
+                      "and timeshare auctions -- San Diego, Sacramento, San Francisco, "
+                      "San Bernardino, San Mateo, Orange, Solano)",
     "manual": "User-submitted (unverified)",
 }
 
