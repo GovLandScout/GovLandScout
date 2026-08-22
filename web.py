@@ -307,17 +307,17 @@ h1 { font-size: 2rem; font-weight: 800; letter-spacing: -0.02em; margin: 0 0 0.4
 .bell-btn {
   position: relative; background: none; border: none; cursor: pointer;
   padding: 0.75rem 1.1rem; font-weight: 600; font-size: 0.9rem; color: #475569;
-  border-radius: 8px;
+  border-radius: 0;
 }
 .bell-btn:hover { background: #f1f5f9; color: #0f172a; }
 .bell-badge {
-  position: absolute; top: 4px; right: 2px; width: 8px; height: 8px; border-radius: 999px;
+  position: absolute; top: 4px; right: 2px; width: 8px; height: 8px; border-radius: 0;
   background: #dc2626; display: none;
 }
 .bell-badge.show { display: block; }
 .bell-popover {
   display: none; position: absolute; top: calc(100% + 6px); right: 0; z-index: 20;
-  background: #fff; border: 1px solid #e2e8f0; border-radius: 10px;
+  background: #fff; border: 1px solid #e2e8f0; border-radius: 0;
   box-shadow: 0 8px 24px rgba(15, 23, 42, 0.12); padding: 0.9rem 1rem;
   width: 19rem; font-size: 0.85rem; color: #1e293b; line-height: 1.5;
 }
@@ -348,9 +348,9 @@ tr:nth-child(even) td { background: #f8fafc; }
 tr:nth-child(odd) td { background: #fff; }
 tr:hover td { background: #eff6ff; }
 .nodata { color: #94a3b8; font-style: italic; }
-.thumb { display: block; object-fit: cover; border-radius: 6px; }
+.thumb { display: block; object-fit: cover; border-radius: 0; }
 .equity-badge {
-  display: inline-block; padding: 3px 10px; border-radius: 999px;
+  display: inline-block; padding: 3px 10px; border-radius: 0;
   color: #fff; font-weight: 700; font-size: 0.8rem; white-space: nowrap;
 }
 
@@ -363,7 +363,7 @@ tr:hover td { background: #eff6ff; }
 .bookmark-btn-popup { font-size: 1rem; margin-left: 6px; vertical-align: middle; }
 
 .card {
-  background: #fff; border: 1px solid #e2e8f0; border-radius: 12px;
+  background: #fff; border: 1px solid #e2e8f0; border-radius: 0;
   box-shadow: 0 1px 3px rgba(15, 23, 42, 0.06);
 }
 
@@ -377,7 +377,7 @@ tr:hover td { background: #eff6ff; }
   text-transform: uppercase; letter-spacing: 0.04em;
 }
 .control input[type="text"], .control select {
-  padding: 0.5rem 0.7rem; font-size: 0.9rem; border: 1px solid #cbd5e1; border-radius: 8px;
+  padding: 0.5rem 0.7rem; font-size: 0.9rem; border: 1px solid #cbd5e1; border-radius: 0;
   background: #fff; color: #0f172a;
 }
 .control input[type="text"]:focus, .control select:focus {
@@ -397,7 +397,7 @@ tr:hover td { background: #eff6ff; }
 }
 .checkbox-grid input[type="checkbox"] { accent-color: #2563eb; cursor: pointer; }
 #resetFilters, #toggleMap {
-  padding: 0.55rem 1.1rem; font-size: 0.85rem; font-weight: 600; border-radius: 8px;
+  padding: 0.55rem 1.1rem; font-size: 0.85rem; font-weight: 600; border-radius: 0;
   cursor: pointer; margin-right: 0.5rem; border: 1px solid transparent;
   transition: background 0.15s ease, border-color 0.15s ease;
 }
@@ -414,14 +414,14 @@ tr:hover td { background: #eff6ff; }
   background: #fff; border: 1px solid #e2e8f0; border-top: none;
 }
 .pagination button {
-  padding: 0.45rem 0.9rem; font-size: 0.85rem; font-weight: 600; border-radius: 8px;
+  padding: 0.45rem 0.9rem; font-size: 0.85rem; font-weight: 600; border-radius: 0;
   cursor: pointer; border: 1px solid #cbd5e1; background: #fff; color: #334155;
 }
 .pagination button:hover:not(:disabled) { background: #f1f5f9; }
 .pagination button:disabled { opacity: 0.4; cursor: default; }
 #pageIndicator { font-size: 0.85rem; color: #475569; min-width: 8rem; text-align: center; }
 #pageSelect {
-  padding: 0.45rem 0.7rem; font-size: 0.85rem; border: 1px solid #cbd5e1; border-radius: 8px;
+  padding: 0.45rem 0.7rem; font-size: 0.85rem; border: 1px solid #cbd5e1; border-radius: 0;
   background: #fff; color: #334155;
 }
 
@@ -439,7 +439,7 @@ tr:hover td { background: #eff6ff; }
 .contact-card { padding: 1.5rem; max-width: 32rem; }
 
 .manual-badge {
-  display: inline-block; padding: 1px 8px; border-radius: 999px;
+  display: inline-block; padding: 1px 8px; border-radius: 0;
   background: #fef3c7; color: #92400e; font-weight: 700; font-size: 0.68rem;
   text-transform: uppercase; letter-spacing: 0.03em; vertical-align: middle;
 }
@@ -449,7 +449,7 @@ tr:hover td { background: #eff6ff; }
 .manual-form label { font-size: 0.85rem; font-weight: 700; color: #334155; }
 .manual-form .hint { font-size: 0.78rem; color: #64748b; }
 .manual-form input[type="text"], .manual-form input[type="url"], .manual-form textarea {
-  padding: 0.6rem 0.75rem; font-size: 0.9rem; border: 1px solid #cbd5e1; border-radius: 8px;
+  padding: 0.6rem 0.75rem; font-size: 0.9rem; border: 1px solid #cbd5e1; border-radius: 0;
   background: #fff; color: #0f172a; font-family: inherit;
 }
 .manual-form input:focus, .manual-form textarea:focus {
@@ -458,12 +458,12 @@ tr:hover td { background: #eff6ff; }
 .manual-form textarea { resize: vertical; min-height: 5rem; }
 .manual-form .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
 .manual-form button {
-  padding: 0.65rem 1.4rem; font-size: 0.9rem; font-weight: 700; border-radius: 8px;
+  padding: 0.65rem 1.4rem; font-size: 0.9rem; font-weight: 700; border-radius: 0;
   cursor: pointer; border: none; background: #2563eb; color: #fff;
 }
 .manual-form button:hover { background: #1d4ed8; }
 .form-banner {
-  padding: 0.9rem 1.1rem; border-radius: 8px; font-size: 0.88rem; margin-bottom: 1.25rem;
+  padding: 0.9rem 1.1rem; border-radius: 0; font-size: 0.88rem; margin-bottom: 1.25rem;
   max-width: 40rem;
 }
 .form-banner.success { background: #dcfce7; color: #166534; border: 1px solid #86efac; }
@@ -561,7 +561,7 @@ def page_shell(title: str, active: str, body: str, extra_head: str = "") -> str:
     <head>
       <meta charset="utf-8" />
       <meta name="viewport" content="width=device-width, initial-scale=1" />
-      <meta name="description" content="A searchable, mappable record of real estate being sold by government entities across Texas, Pennsylvania, and California -- county tax sales, federal and state surplus, HUD foreclosures, and land bank listings." />
+      <meta name="description" content="A searchable, mappable record of real estate being sold by government entities across Texas, Pennsylvania, and California: county tax sales, federal and state surplus, HUD foreclosures, and land bank listings." />
       <title>{title}</title>
       {extra_head}
       <style>{PAGE_CSS}</style>
@@ -687,8 +687,8 @@ def deals_page():
     priced_count = payload["priced_count"]
 
     body = f"""
-      <h1>GovLandScout - Distressed Property Finder</h1>
-      <p class="subtitle">GovLandScout is a project attempting to show a listing of all property being sold by the government, currently covering Texas, Pennsylvania, and California, to try to help combat rising home prices and a lack of housing affordability. {total_count} total listings across all sources, shown below in random order -- use "Sort by" to rank by equity, estimated value, or minimum bid instead. {priced_count} have a full equity calculation; listings without one still show, just with "{NO_DATA}" where a field doesn't apply.</p>
+      <h1>GovLandScout: Distressed Property Finder</h1>
+      <p class="subtitle">GovLandScout is a project attempting to show a listing of all property being sold by the government, currently covering Texas, Pennsylvania, and California, to try to help combat rising home prices and a lack of housing affordability. {total_count} total listings across all sources, shown below in random order; use "Sort by" to rank by equity, estimated value, or minimum bid instead. {priced_count} have a full equity calculation; listings without one still show, just with "{NO_DATA}" where a field doesn't apply.</p>
 
       <div class="controls card">
         <div class="control">
@@ -697,7 +697,7 @@ def deals_page():
         </div>
 
         <div class="control range-control">
-          <label>Est. value: <span id="minValueLabel"></span> &ndash; <span id="maxValueLabel"></span></label>
+          <label>Est. value: <span id="minValueLabel"></span> to <span id="maxValueLabel"></span></label>
           <div class="range-row">
             <span class="range-value">Min</span>
             <input type="range" id="minValue" min="{value_min}" max="{value_max}" step="1000" value="{value_min}" oninput="applyFilters()">
@@ -1252,8 +1252,8 @@ def deals_page():
 
 def render_market_trends_page(state: dict) -> str:
     body = f"""
-      <h1>Market Trends: {state['name']} <span class="manual-badge" title="A research model, not a feature of the property listings above -- see the notes below before reading anything into it">Experimental</span></h1>
-      <p class="subtitle">A gradient boosting model trained on Zillow Research and FRED historical data -- not GovLandScout's own listings -- predicting how each {state['name']} county's share of price-cut listings is likely to move over the next 1, 3, or 6 months. Darker red means the model expects <i>more</i> price cuts (rising distress); darker green means <i>fewer</i> (easing). Counties with no shading don't have enough Zillow history to include yet.</p>
+      <h1>Market Trends: {state['name']} <span class="manual-badge" title="A research model, not a feature of the property listings above; see the notes below before reading anything into it">Experimental</span></h1>
+      <p class="subtitle">A gradient boosting model trained on Zillow Research and FRED historical data, not GovLandScout's own listings, predicting how each {state['name']} county's share of price cut listings is likely to move over the next 1, 3, or 6 months. Darker red means the model expects <i>more</i> price cuts (rising distress); darker green means <i>fewer</i> (easing). Counties with no shading don't have enough Zillow history to include yet.</p>
 
       <div class="card" style="padding: 1.5rem 1.75rem; margin-bottom: 1.5rem;">
         <div class="control" style="max-width: 20rem;">
@@ -1270,13 +1270,13 @@ def render_market_trends_page(state: dict) -> str:
       <div id="trendsLegend" class="card" style="padding: 1rem 1.25rem; margin-bottom: 1.5rem; font-size: 0.85rem; color: #475569;"></div>
 
       <div id="countyDetailPanel" class="card" style="padding: 1.5rem 1.75rem; margin-bottom: 1.5rem;">
-        <p style="color:#64748b; margin:0;">Click a county on the map to see its price-cut history and the model's projection.</p>
+        <p style="color:#64748b; margin:0;">Click a county on the map to see its price cut history and the model's projection.</p>
       </div>
 
       <div class="card prose" style="padding: 1.5rem 1.75rem;">
         <h2>What this actually is</h2>
-        <p>This map has nothing to do with the property listings elsewhere on this site -- it's a separate research project applying a machine learning model to county-level housing market data, built to explore whether historical patterns in price cuts, home values, inventory, and unemployment can predict where distress is headed next. It is <b>not</b> derived from GovLandScout's own scraped listings (that history is only a few weeks old, nowhere near enough to train on), it is <b>not</b> validated for real investment, policy, or funding decisions, and a county shaded red is not a claim that specific properties there are about to become distressed -- it's a county-level statistical tendency, evaluated on historical data the model wasn't trained on but still just a model, with real, measured error (see the writeup below).</p>
-        <p>Full methodology, data sources, and honest results -- including where this model does and doesn't work well -- are written up in
+        <p>This map has nothing to do with the property listings elsewhere on this site; it's a separate research project applying a machine learning model to county level housing market data, built to explore whether historical patterns in price cuts, home values, inventory, and unemployment can predict where distress is headed next. It is <b>not</b> derived from GovLandScout's own scraped listings (that history is only a few weeks old, nowhere near enough to train on), it is <b>not</b> validated for real investment, policy, or funding decisions, and a county shaded red is not a claim that specific properties there are about to become distressed; it's a county level statistical tendency, evaluated on historical data the model wasn't trained on but still just a model, with real, measured error (see the writeup below).</p>
+        <p>Full methodology, data sources, and honest results, including where this model does and doesn't work well, are written up in
            <a href="https://github.com/GovLandScout/GovLandScout/tree/main/model" target="_blank" rel="noopener noreferrer">model/README.md</a> in the project's repository.</p>
       </div>
 
@@ -1430,7 +1430,7 @@ def render_market_trends_page(state: dict) -> str:
           // a visible flag here rather than being presented as if Zillow
           // had price-cut data for them after all.
           const isGapFilled = row.metric === 'zhvi_decline';
-          const currentLabel = isGapFilled ? 'Current home-value growth rate' : 'Current price-cut share';
+          const currentLabel = isGapFilled ? 'Current home value growth rate' : 'Current price cut share';
           const projectedValue = row.current_value + row[horizon];
           const std = row[horizon + '_std'];
           const std95 = row[horizon + '_std95'];
@@ -1438,7 +1438,7 @@ def render_market_trends_page(state: dict) -> str:
 
           panel.innerHTML = `
             <h3 style="margin-top:0;">${{row.county}}</h3>
-            ${{isGapFilled ? `<p style="margin:0 0 0.5rem;font-size:0.8rem;color:#b45309;">Zillow doesn't publish price-cut data for this county -- estimated from home-value trends instead. See model/README.md.</p>` : ''}}
+            ${{isGapFilled ? `<p style="margin:0 0 0.5rem;font-size:0.8rem;color:#b45309;">Zillow doesn't publish price cut data for this county, estimated from home value trends instead. See model/README.md.</p>` : ''}}
             <p style="margin: 0 0 0.75rem;">
               ${{currentLabel}}: <b>${{(row.current_value * 100).toFixed(1)}}%</b>
               &middot; Model's ${{horizonLabel}} projection:
@@ -1448,7 +1448,7 @@ def render_market_trends_page(state: dict) -> str:
             </p>
             ${{buildTrendSvg(row.history, projectedValue, std, std95)}}
             <p style="margin: 0.5rem 0 0; font-size: 0.8rem; color: #64748b;">
-              Solid line: actual monthly ${{isGapFilled ? 'home-value growth rate' : 'price-cut share'}}, last ${{row.history.length}} months.
+              Solid line: actual monthly ${{isGapFilled ? 'home value growth rate' : 'price cut share'}}, last ${{row.history.length}} months.
               Dashed line: the model's projected value ${{horizonLabel.toLowerCase()}}, not another observed month.
               ${{std != null ? `Green bar: the ~68% confidence range around that projection.` : ''}}
               ${{std95 != null ? ` Blue bar: the ~95% range.` : ''}}
@@ -1496,7 +1496,7 @@ def render_market_trends_page(state: dict) -> str:
             onEachFeature: (feature, layer) => {{
               const row = PREDICTIONS_BY_COUNTY[feature.properties.name];
               if (!row || row[horizon] == null) {{
-                layer.bindTooltip(`${{feature.properties.name}} -- no data`);
+                layer.bindTooltip(`${{feature.properties.name}}: no data`);
                 return;
               }}
               const pct = (row[horizon] * 100).toFixed(1);
@@ -1504,25 +1504,25 @@ def render_market_trends_page(state: dict) -> str:
               const std = row[horizon + '_std'];
               const std95 = row[horizon + '_std95'];
               const isGapFilled = row.metric === 'zhvi_decline';
-              const currentLabel = isGapFilled ? 'Current home-value growth rate' : 'Current price-cut share';
+              const currentLabel = isGapFilled ? 'Current home value growth rate' : 'Current price cut share';
               layer.bindTooltip(
-                `<b>${{feature.properties.name}}</b>${{isGapFilled ? ' <span style="color:#b45309;">(est. from home values, no price-cut data)</span>' : ''}}<br>`
+                `<b>${{feature.properties.name}}</b>${{isGapFilled ? ' <span style="color:#b45309;">(est. from home values, no price cut data)</span>' : ''}}<br>`
                 + `${{currentLabel}}: ${{(row.current_value * 100).toFixed(1)}}%<br>`
                 + `Predicted change (${{horizonLabel}}): ${{sign}}${{pct}} points`
                 + `${{std != null ? ` (&plusmn;${{(std * 100).toFixed(1)}}${{std95 != null ? `, up to &plusmn;${{(std95 * 100).toFixed(1)}} worst case` : ''}})` : ''}}<br>`
-                + `<span style="color:#64748b">as of ${{row.as_of}} -- click for trend chart</span>`
+                + `<span style="color:#64748b">as of ${{row.as_of}}: click for trend chart</span>`
               );
               layer.on('click', () => showCountyDetail(row));
             }},
           }}).addTo(trendsMap);
 
           document.getElementById('trendsLegend').innerHTML =
-            `<b>${{horizonLabel}}</b> -- darker red: more distress expected &middot; `
+            `<b>${{horizonLabel}}</b>: darker red: more distress expected &middot; `
             + `darker green: less expected (easing) &middot; gray: no model data for that county. `
             + `Faded fill: a wider calibrated confidence interval for that county, i.e. lower confidence. `
-            + `Color scale is relative to each county's own metric range (price-cut and home-value-based `
+            + `Color scale is relative to each county's own metric range (price cut and home value based `
             + `counties are scaled separately, since they're not the same unit). `
-            + `Dashed border: county has no Zillow price-cut data, shown here from home-value trends instead.`;
+            + `Dashed border: county has no Zillow price cut data, shown here from home value trends instead.`;
 
           // Keep the detail panel in sync if a county's already selected
           // and the visitor just switched horizons, instead of leaving it
@@ -1540,7 +1540,7 @@ def render_market_trends_page(state: dict) -> str:
           integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="" />
     """
     return page_shell(
-        f"GovLandScout - Market Trends: {state['name']} (Experimental)",
+        f"GovLandScout: Market Trends: {state['name']} (Experimental)",
         state["nav_key"], body, extra_head=extra_head,
     )
 
@@ -1586,20 +1586,20 @@ SOURCE_LABELS = {
     "publicsurplus.com": "PublicSurplus (TX and CA government surplus real estate)",
     "realauction.com": "RealAuction/RealForeclose (TX Sheriff & Constable tax sales; "
                         "PA county Sheriff Sales, mostly mortgage foreclosure)",
-    "guadalupetx.gov": "Guadalupe County (self-published)",
-    "govease.com": "GovEase (county tax sale platform -- TX Sheriff/Constable sales, "
-                    "PA Upset/Judicial sales, CA county tax-defaulted property auctions)",
-    "collincountytx.gov": "Collin County Constable Sales (self-published)",
-    "bid4assets.com": "Bid4Assets (PA county tax sale platform -- Upset/Judicial/Repository sales; "
-                       "also CA county tax-defaulted property auctions)",
-    "montgomerycountypa.gov": "Montgomery County Tax Claim Bureau (self-published)",
-    "chesco.org": "Chester County Tax Claim Bureau (self-published)",
-    "sheriffalleghenycounty.com": "Allegheny County Sheriff Sales (mortgage foreclosure, tax lien, and municipal lien, self-published)",
-    "mytaxsale.com": "Grant Street Group DeedAuction (CA county tax-defaulted property "
-                      "and timeshare auctions -- San Diego, Sacramento, San Francisco, "
+    "guadalupetx.gov": "Guadalupe County (self published)",
+    "govease.com": "GovEase (county tax sale platform: TX Sheriff/Constable sales, "
+                    "PA Upset/Judicial sales, CA county tax defaulted property auctions)",
+    "collincountytx.gov": "Collin County Constable Sales (self published)",
+    "bid4assets.com": "Bid4Assets (PA county tax sale platform: Upset/Judicial/Repository sales; "
+                       "also CA county tax defaulted property auctions)",
+    "montgomerycountypa.gov": "Montgomery County Tax Claim Bureau (self published)",
+    "chesco.org": "Chester County Tax Claim Bureau (self published)",
+    "sheriffalleghenycounty.com": "Allegheny County Sheriff Sales (mortgage foreclosure, tax lien, and municipal lien, self published)",
+    "mytaxsale.com": "Grant Street Group DeedAuction (CA county tax defaulted property "
+                      "and timeshare auctions: San Diego, Sacramento, San Francisco, "
                       "San Bernardino, San Mateo, Orange, Solano)",
-    "placer.ca.gov": "Placer County Tax Land Sale (self-published, in-person auction only)",
-    "manual": "User-submitted (unverified)",
+    "placer.ca.gov": "Placer County Tax Land Sale (self published, in person auction only)",
+    "manual": "User submitted (unverified)",
 }
 
 
@@ -1659,18 +1659,18 @@ def render_numbers_page(state: dict) -> str:
       <div class="card prose" style="padding: 1.5rem 1.75rem;">
         <h2>What "equity" means here</h2>
         <p>When a listing has both a minimum bid and an independent value estimate, we subtract one from the other
-           to get equity -- basically, how much room there is between what you'd pay and what the property is
+           to get equity: basically, how much room there is between what you'd pay and what the property is
            actually worth. A lot of listings don't have both numbers to work with (GSA and state surplus sales,
            for instance, don't come with an independent appraisal at all), which is why equity is only calculated
            for {len(priced_with_equity):,} of the {total:,} {state['name']} listings tracked here, not all of them.
-           "Average equity per priced listing" is the total estimated equity above divided by just that {len(priced_with_equity):,} --
+           "Average equity per priced listing" is the total estimated equity above divided by just that {len(priced_with_equity):,},
            not the full {total:,}, which would understate it by folding in listings with nothing to calculate from.</p>
 
         <h2>Where the data comes from</h2>
         <ul>{source_items}</ul>
       </div>
     """
-    return page_shell(f"GovLandScout - Numbers: {state['name']}", state["nav_key"], body)
+    return page_shell(f"GovLandScout: Numbers: {state['name']}", state["nav_key"], body)
 
 
 @app.get("/numbers", response_class=HTMLResponse)
@@ -1694,7 +1694,7 @@ def investment_info_page():
       <h1>Investment Information</h1>
       <p class="subtitle">Not every listing here works the same way. Depending on where it came from, you're
          looking at a different legal process, a different deed, and a different answer to "can the previous
-         owner still get this back after I buy it." This page walks through what each source actually means --
+         owner still get this back after I buy it." This page walks through what each source actually means;
          it's not legal or tax advice, just an overview, so read the disclaimer at the bottom before you act on
          anything here.</p>
 
@@ -1703,118 +1703,118 @@ def investment_info_page():
         <p>This is the bulk of what's on this site. A county has gone unpaid on property taxes long enough that
            it forecloses and auctions the property to recover the debt, under Texas Property Tax Code Chapter 34.
            A Sheriff or Constable runs the actual sale no matter who's doing the marketing around it. Most
-           counties hand that marketing off to a trustee law firm -- Linebarger Goggan Blair &amp; Sampson, Perdue
+           counties hand that marketing off to a trustee law firm: Linebarger Goggan Blair &amp; Sampson, Perdue
            Brandon Fielder Collins &amp; Mott, and McCreary Veselka Bragg &amp; Allen are the three whose listings
            we pull in directly. A few counties skip the trustee firm: Travis and Caldwell run their bidding
            through the RealAuction/RealForeclose platform, Denton, Grayson, and Wichita do the same through
            GovEase, and Collin County just posts its own constable sale notices directly. Different paperwork,
            same underlying process.</p>
-        <p>What you get afterward is a Sheriff's or Constable's Deed -- not a general warranty deed, so it only
+        <p>What you get afterward is a Sheriff's or Constable's Deed, not a general warranty deed, so it only
            passes along whatever interest the previous owner actually had. Most title companies won't insure it
-           until any redemption period has passed, and often not until someone's filed a quiet-title suit on top
+           until any redemption period has passed, and often not until someone's filed a quiet title suit on top
            of that.</p>
         <p>The redemption period is the part worth paying attention to. Under Tax Code &sect;34.21, the former
-           owner (or a lienholder) can still buy the property back from you afterward -- two years out for a
+           owner (or a lienholder) can still buy the property back from you afterward: two years out for a
            homestead, agricultural land, or anything with a mineral interest attached; 180 days for everything
            else, commercial and vacant land included. If they do redeem it, you get your money back plus a
-           premium: 25% if it happens in the first year (or across the full 180 days for non-homestead property),
-           50% if it stretches into the second year on the 2-year class. Until that window closes, you don't
-           really have free use of what you bought. Double-check the current period and premium against the
-           statute itself, or with an attorney, before you bid -- don't take this page's word for it.</p>
-        <p>Payment is almost always cash or a cashier's check, due the same day at the courthouse-steps sale.</p>
+           premium: 25% if it happens in the first year (or across the full 180 days for non homestead property),
+           50% if it stretches into the second year on the 2 year class. Until that window closes, you don't
+           really have free use of what you bought. Double check the current period and premium against the
+           statute itself, or with an attorney, before you bid; don't take this page's word for it.</p>
+        <p>Payment is almost always cash or a cashier's check, due the same day at the courthouse steps sale.</p>
 
         <h2>Pennsylvania county tax sales (Upset &amp; Judicial)</h2>
-        <p>Run under Pennsylvania's Real Estate Tax Sale Law, not Texas's Tax Code -- a different statute with
+        <p>Run under Pennsylvania's Real Estate Tax Sale Law, not Texas's Tax Code: a different statute with
            meaningfully different rules, even though the listings show up on this site the same way (several PA
            counties, like several TX ones, sell through the GovEase platform rather than running their own site).
            A property is first offered at an <b>Upset Sale</b>; if it doesn't sell there, the county can petition
            the court to resell it at a later <b>Judicial Sale</b> instead. The type matters a lot: an Upset Sale
-           conveys the property <i>subject to</i> existing mortgages, judgments, and other liens of record -- you
+           conveys the property <i>subject to</i> existing mortgages, judgments, and other liens of record; you
            can inherit debt attached to the property, not just the property itself. A Judicial Sale, by contrast,
-           is court-ordered to convey free and clear of liens, mortgages, and most claims (as long as every
+           is court ordered to convey free and clear of liens, mortgages, and most claims (as long as every
            lienholder got proper notice), which is the whole reason a property graduates from one sale type to
            the other.</p>
         <p>Unlike Texas, Pennsylvania generally has <b>no statutory redemption period</b> after either sale type
-           closes -- ownership is final, not contingent on a window the former owner can still exercise. The one
-           common exception: in most counties, an owner-occupied property carries roughly a 9-month post-sale
+           closes; ownership is final, not contingent on a window the former owner can still exercise. The one
+           common exception: in most counties, an owner occupied property carries roughly a 9 month post sale
            right of redemption if the former owner pays off what's owed. Whether that exception applies, and the
-           exact terms either way, is set by each county's own Tax Claim Bureau -- confirm directly with them, and
+           exact terms either way, is set by each county's own Tax Claim Bureau; confirm directly with them, and
            with an attorney, before bidding; this page is a starting point, not the statute.</p>
 
-        <h2>California county tax-defaulted property sales</h2>
-        <p>Run under California's Revenue and Taxation Code (Division 1, Part 6, Chapter 7) -- a third distinct
+        <h2>California county tax defaulted property sales</h2>
+        <p>Run under California's Revenue and Taxation Code (Division 1, Part 6, Chapter 7): a third distinct
            statutory scheme from either Texas's Tax Code or Pennsylvania's Real Estate Tax Sale Law. A property
            becomes eligible for sale once its taxes have been in default for five years (Rev. &amp; Tax. Code
            &sect;3691; a shorter three years applies to certain nonresidential commercial property under the same
-           section -- confirm which applies to a specific parcel, don't assume). At that point the county Tax
-           Collector gains the power to sell it and can offer it at public auction, increasingly run online --
+           section; confirm which applies to a specific parcel, don't assume). At that point the county Tax
+           Collector gains the power to sell it and can offer it at public auction, increasingly run online:
            several California counties on this site sell through Bid4Assets, the same platform several
            Pennsylvania counties here also use.</p>
         <p>The deed you get is a <b>Tax Collector's Deed to Purchaser</b>, and unlike Texas's Sheriff's/Constable's
            Deed, it conveys title free and clear of most liens and encumbrances that existed before the sale
-           (Rev. &amp; Tax. Code &sect;3712) -- not an unconditional guarantee, though: recorded easements and
+           (Rev. &amp; Tax. Code &sect;3712), not an unconditional guarantee, though: recorded easements and
            restrictive covenants, assessments not yet due, IRS liens (which carry their own separate federal
-           post-sale redemption right), and some special-district or Mello-Roos assessment liens can survive
+           post sale redemption right), and some special district or Mello Roos assessment liens can survive
            regardless. Confirm what specifically does and doesn't get wiped for a given parcel before you bid.</p>
-        <p>The redemption period runs the opposite direction from Texas and Pennsylvania's post-sale windows: in
+        <p>The redemption period runs the opposite direction from Texas and Pennsylvania's post sale windows: in
            California, the former owner's right to redeem <i>ends</i> at the close of business the last business
            day before the auction, not after. Once your winning bid is accepted and payment clears, the sale is
-           final -- there's no window afterward where the previous owner can buy the property back from you.</p>
+           final; there's no window afterward where the previous owner can buy the property back from you.</p>
         <p>Payment is due fast, typically within a few business days of the auction closing (exact timing depends
-           on the county and the platform), by cashier's check, wire, or ACH -- financing isn't part of this
+           on the county and the platform), by cashier's check, wire, or ACH; financing isn't part of this
            process. As with the other sale types on this page, confirm current rules with the specific county's
            Tax Collector, or with an attorney, before bidding.</p>
 
         <h2>Federal surplus real estate (GSA)</h2>
         <p>Every so often the federal government decides it doesn't need a piece of property anymore and sells it
-           off through GSA, either by sealed bid or online auction -- nothing to do with delinquent taxes, just
+           off through GSA, either by sealed bid or online auction; nothing to do with delinquent taxes, just
            routine disposal under federal regulations. You'll get a quitclaim deed, and unlike the tax sales
            above, there's no redemption period: once the sale closes, it's closed. Terms are set listing by
            listing, so read the specific auction before bidding.</p>
 
-        <h2>HUD-owned foreclosed homes</h2>
-        <p>These are homes HUD ended up owning after an FHA-insured mortgage went into foreclosure -- a mortgage
+        <h2>HUD owned foreclosed homes</h2>
+        <p>These are homes HUD ended up owning after an FHA insured mortgage went into foreclosure; a mortgage
            default process, not a tax sale. HUD conveys title with a special warranty deed, and there's no
-           redemption period to worry about. Some listings hold a window early on for owner-occupant buyers before
+           redemption period to worry about. Some listings hold a window early on for owner occupant buyers before
            investors are allowed to bid, and financing varies property to property (some allow FHA loans, others
-           are cash/as-is only), so check each listing individually.</p>
+           are cash/as is only), so check each listing individually.</p>
 
         <h2>Texas Veterans Land Board tracts</h2>
-        <p>When a veteran or service member defaults on a VLB land loan, the state resells the tract -- a default
+        <p>When a veteran or service member defaults on a VLB land loan, the state resells the tract: a default
            process specific to that program, unrelated to property taxes. An approved veteran or military buyer
            may be able to finance the purchase through VLB itself, historically something like 5% down on a
-           30-year term, though the rate is the agency's to set and it moves. Confirm current terms and any
+           30 year term, though the rate is the agency's to set and it moves. Confirm current terms and any
            redemption or rescission rights directly with VLB before bidding; this page isn't the source of truth
            on what they're currently offering.</p>
 
         <h2>IRS seized real estate</h2>
-        <p>Property the IRS seized under Internal Revenue Code &sect;6331 over unpaid <i>federal income</i> tax --
-           not property tax -- and sold under &sect;6335. Entirely separate process from anything a county runs.
-           The delinquent taxpayer keeps a 180-day window under &sect;6337 to redeem by repaying your purchase
+        <p>Property the IRS seized under Internal Revenue Code &sect;6331 over unpaid <i>federal income</i> tax,
+           not property tax, and sold under &sect;6335. Entirely separate process from anything a county runs.
+           The delinquent taxpayer keeps a 180 day window under &sect;6337 to redeem by repaying your purchase
            price plus interest, so in practice it works a lot like a county tax sale's redemption period: you
-           might not get to keep it. A deposit is due when you bid, with the balance due shortly after -- check
+           might not get to keep it. A deposit is due when you bid, with the balance due shortly after; check
            the actual Notice of Sale for exact terms.</p>
 
         <h2>Municipal land bank (Houston Land Bank)</h2>
         <p>These lots already went through a county tax foreclosure and either didn't sell or got transferred to
-           the land bank, which now resells them directly -- meaning the redemption period already ran its course
+           the land bank, which now resells them directly; meaning the redemption period already ran its course
            before these ever showed up here. The catch is that a lot of these carry a minimum development
-           requirement: build to a certain value within a set timeframe as a condition of the below-market price.
-           That's not fine print you can skip past -- it's on the listing, and it's real.</p>
+           requirement: build to a certain value within a set timeframe as a condition of the below market price.
+           That's not fine print you can skip past; it's on the listing, and it's real.</p>
 
         <h2>State and local government surplus (PublicSurplus)</h2>
         <p>General surplus property, unrelated to taxes, auctioned off by a state agency, county, or city. Terms
-           vary by seller and by listing enough that there's no single rule of thumb here -- read what the
+           vary by seller and by listing enough that there's no single rule of thumb here; read what the
            specific auction says before bidding.</p>
       </div>
 
       <div class="card prose" style="padding: 1.5rem 1.75rem; margin-bottom: 1.5rem;">
         <h2>A few things that hold true almost everywhere</h2>
-        <p>Everything here sells as-is. None of these sellers warranty the property's condition, you usually
-           can't get inside to inspect beforehand, and you're bidding off whatever the public record says --
+        <p>Everything here sells as is. None of these sellers warranty the property's condition, you usually
+           can't get inside to inspect beforehand, and you're bidding off whatever the public record says;
            verify what you can before you bid, because there's no verifying after.</p>
         <p>Title risk isn't consistent across sale types. A tax deed or IRS deed isn't a warranty deed from a
-           normal closing -- liens, easements, or ownership disputes can survive the sale depending on which kind
+           normal closing; liens, easements, or ownership disputes can survive the sale depending on which kind
            you're dealing with, and title insurance can be slow to arrive or unavailable outright. A title company
            or real estate attorney can tell you what actually transfers clean on a specific property, and it's
            worth that call before you commit real money.</p>
@@ -1828,22 +1828,22 @@ def investment_info_page():
         <h2 style="margin-top:0;">This isn't legal, tax, or financial advice</h2>
         <p class="prose" style="margin-bottom:0;">The redemption periods, premiums, deed types, and financing
            terms above reflect how these rules generally work in Texas, Pennsylvania, and federally, as best we can summarize
-           them -- but statutes get amended, agencies change their terms, and every property has its own facts
+           them, but statutes get amended, agencies change their terms, and every property has its own facts
            that can change the analysis. None of this replaces an actual conversation with a licensed real estate
            attorney, title company, or tax professional, and you should independently verify current terms with
            the listing agency (linked from every listing) before bidding on or buying anything. GovLandScout is an
            independent research tool and isn't affiliated with any county, state, or federal agency.</p>
       </div>
     """
-    return page_shell("GovLandScout - Investment Info", "investment", body)
+    return page_shell("GovLandScout: Investment Info", "investment", body)
 
 
 def manual_upload_form_html(banner: str = "") -> str:
     return f"""
       <h1>Manual Property Uploads</h1>
-      <p class="subtitle">Know of a government-owned or distressed property that isn't showing up here yet?
+      <p class="subtitle">Know of a government owned or distressed property that isn't showing up here yet?
          Add it below. Manually submitted properties are shown alongside scraped listings but are clearly
-         labeled "User submitted" and are <b>not</b> independently verified the way the scraped sources are --
+         labeled "User submitted" and are <b>not</b> independently verified the way the scraped sources are;
          see the <a href="/about">About page</a> for how the rest of the site's data is sourced.</p>
 
       {banner}
@@ -1872,7 +1872,7 @@ def manual_upload_form_html(banner: str = "") -> str:
         <div class="field">
           <label for="address">Address</label>
           <input type="text" id="address" name="address" placeholder="123 Main St, Houston, TX 77002" maxlength="300">
-          <span class="hint">Used to plot the property on the map -- format as street, city, state, zip if possible.
+          <span class="hint">Used to plot the property on the map: format as street, city, state, zip if possible.
              Don't have a street address (e.g. vacant land)? Enter GPS coordinates below instead.</span>
         </div>
 
@@ -1901,13 +1901,13 @@ def manual_upload_form_html(banner: str = "") -> str:
 
         <div class="field">
           <label for="description">Description</label>
-          <textarea id="description" name="description" maxlength="2000" placeholder="Anything else worth noting -- condition, how you found it, etc."></textarea>
+          <textarea id="description" name="description" maxlength="2000" placeholder="Anything else worth noting: condition, how you found it, etc."></textarea>
         </div>
 
         <div class="field">
           <label for="source_url">Source link *</label>
           <input type="url" id="source_url" name="source_url" placeholder="https://..." required maxlength="500">
-          <span class="hint">A link to where you found this (a listing, a county site, a news article) -- required so every
+          <span class="hint">A link to where you found this (a listing, a county site, a news article), required so every
              submitted property can be traced back to where it came from.</span>
         </div>
 
@@ -1922,12 +1922,12 @@ def manual_upload_form_html(banner: str = "") -> str:
 def manual_upload_page(success: str | None = None, error: str | None = None):
     banner = ""
     if success:
-        banner = '<div class="form-banner success">Thanks -- your property was added and now appears in the listings on the home page.</div>'
+        banner = '<div class="form-banner success">Thanks! Your property was added and now appears in the listings on the home page.</div>'
     elif error:
         banner = f'<div class="form-banner error">{escape(error)}</div>'
     extra_head = TURNSTILE_HEAD if TURNSTILE_SITE_KEY else ""
     return page_shell(
-        "GovLandScout - Manual Property Uploads", "manual-upload", manual_upload_form_html(banner),
+        "GovLandScout: Manual Property Uploads", "manual-upload", manual_upload_form_html(banner),
         extra_head=extra_head,
     )
 
@@ -1954,7 +1954,7 @@ def manual_upload_submit(
     # caught it, and this is the cheapest one to run first.
     if is_rate_limited(ip):
         return RedirectResponse(
-            "/manual-upload?error=Too many submissions from this address -- please try again in a few minutes.",
+            "/manual-upload?error=Too many submissions from this address, please try again in a few minutes.",
             status_code=303,
         )
 
@@ -1965,7 +1965,7 @@ def manual_upload_submit(
 
     if not verify_turnstile(turnstile_token, ip):
         return RedirectResponse(
-            "/manual-upload?error=CAPTCHA verification failed -- please try again.", status_code=303,
+            "/manual-upload?error=CAPTCHA verification failed, please try again.", status_code=303,
         )
 
     county = county.strip()
@@ -2072,17 +2072,17 @@ def about_page():
       <div class="card prose" style="padding: 1.5rem 1.75rem; margin-bottom: 1.5rem;">
         <h2>What this is</h2>
         <p>GovLandScout aggregates real estate being sold by government entities across Texas, Pennsylvania, and
-           California -- county tax foreclosure sales, federal and state surplus property, HUD-owned foreclosed
-           homes, and Veterans Land Board tracts -- into one searchable, mappable place. Rising home prices and
+           California: county tax foreclosure sales, federal and state surplus property, HUD owned foreclosed
+           homes, and Veterans Land Board tracts, into one searchable, mappable place. Rising home prices and
            limited housing affordability make it harder to find a way in; these listings are already public, just
            scattered across dozens of separate county, state, and federal sites. This project pulls them together.</p>
 
         <h2>How it works</h2>
-        <p>A set of scrapers run on a daily schedule, each pulling directly from an official or government-retained
+        <p>A set of scrapers run on a daily schedule, each pulling directly from an official or government retained
            source (see the Numbers pages for <a href="/numbers">Texas</a>, <a href="/numbers-pa">Pennsylvania</a>,
            and <a href="/numbers-ca">California</a> for the full list per state), normalizing everything into one
            shared database. Nothing here is
-           editorialized -- prices, descriptions, and account numbers are shown as published by the source, and
+           editorialized: prices, descriptions, and account numbers are shown as published by the source, and
            every listing links back to where it came from so you can verify it yourself before bidding on anything.</p>
 
         <h2>A word of caution</h2>
@@ -2099,7 +2099,7 @@ def about_page():
            <a href="https://github.com/GovLandScout/GovLandScout" target="_blank" rel="noopener noreferrer">GitHub</a>.</p>
       </div>
     """
-    return page_shell("GovLandScout - About", "about", body)
+    return page_shell("GovLandScout: About", "about", body)
 
 
 @app.get("/api/deals")
