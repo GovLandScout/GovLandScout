@@ -165,7 +165,22 @@ def storefront_link_pattern(state_abbrev: str) -> re.Pattern:
 
 
 def county_name_pattern(state_abbrev: str) -> re.Pattern:
-    return re.compile(rf"^([A-Za-z]+)\s+County,?\s+{state_abbrev}\b", re.IGNORECASE)
+    """
+    The captured group allows multiple words, not just one -- PA's own
+    county names are all a single word, so this went unnoticed until CA
+    was added: confirmed live that "San Joaquin County, CA ..." and
+    "Santa Cruz County, CA ..." storefronts were both silently dropped by
+    an earlier single-word version of this pattern (it matched "^San\\s+
+    County" against "San Joaquin County", which never succeeds, rather
+    than raising anything -- discover_storefronts() just returned one
+    fewer entry with no error, easy to miss). Real, live storefronts on
+    the day this was caught, not a hypothetical -- and the same shape
+    would silently drop every other multi-word CA county too (Santa
+    Barbara, Santa Clara, San Bernardino, San Mateo, San Diego, San Luis
+    Obispo, Contra Costa, El Dorado, Del Norte, San Benito) the moment
+    any of them next runs an auction.
+    """
+    return re.compile(rf"^([A-Za-z]+(?:\s[A-Za-z]+)*)\s+County,?\s+{state_abbrev}\b", re.IGNORECASE)
 
 
 STOREFRONT_ID_PATTERN = re.compile(r"getauctiondisplay/(\d+)\?storefrontCollectionId=")
