@@ -141,6 +141,22 @@ def init_db(conn: PgConnection):
     # same statement, so this is safe to run against a table that already
     # has data.
     conn.execute("ALTER TABLE listings ADD COLUMN IF NOT EXISTS state TEXT NOT NULL DEFAULT 'TX'")
+    # A real photo of the property, when the source itself actually
+    # publishes one -- confirmed live for gsa_scraper.py (realestatesales.gov's
+    # own `property_image` field, a real listing photo) and
+    # houston_landbank_scraper.py (`publicThumbImgUrl`, confirmed against a
+    # real photo showing that lot's own "For Sale" sign). Deliberately NOT
+    # populated from bid4assets.com despite it having a same-shaped
+    # `MainImage_...` URL per listing -- confirmed live across several real
+    # PA and CA listings that this is always either a generic county-seal
+    # graphic or a generic "no photo" icon, never an actual property photo
+    # (tax-defaulted sales aren't professionally photographed the way GSA's
+    # and the land bank's own listings are), which would be strictly worse
+    # than the existing satellite thumbnail if shown as if it were real.
+    # NULL for every other source, same as estimated_value/latitude before
+    # their own backfill scripts existed -- web.py falls back to the
+    # satellite thumbnail whenever this is empty.
+    conn.execute("ALTER TABLE listings ADD COLUMN IF NOT EXISTS image_url TEXT")
     # Replaces the old (county, account_number) key -- kept as a plain DROP
     # (not IF EXISTS-guarded on the old name only) so a fresh database
     # never creates the stale index in the first place.
@@ -361,6 +377,7 @@ def upsert_listing(
     longitude: float | None = None,
     commit: bool = True,
     state: str = "TX",
+    image_url: str | None = None,
 ):
     """
     Keyed on (state, county, account_number) -- account numbers aren't
@@ -389,8 +406,8 @@ def upsert_listing(
         INSERT INTO listings (
             county, account_number, precinct, minimum_bid, estimated_value,
             address, description, status, source, source_url, latitude,
-            longitude, first_seen, last_seen, state
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            longitude, first_seen, last_seen, state, image_url
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT (state, county, account_number) DO UPDATE SET
             precinct = EXCLUDED.precinct,
             minimum_bid = EXCLUDED.minimum_bid,
@@ -422,12 +439,18 @@ def upsert_listing(
             source_url = EXCLUDED.source_url,
             latitude = COALESCE(EXCLUDED.latitude, listings.latitude),
             longitude = COALESCE(EXCLUDED.longitude, listings.longitude),
+            -- Same COALESCE reasoning as estimated_value/address above --
+            -- only gsa_scraper.py and houston_landbank_scraper.py ever
+            -- pass a real image_url (see this column's own comment in
+            -- init_db), so every other source's call here always passes
+            -- None and must not wipe out a real photo already stored.
+            image_url = COALESCE(EXCLUDED.image_url, listings.image_url),
             last_seen = EXCLUDED.last_seen
         """,
         (
             county, account_number, precinct, minimum_bid, estimated_value,
             address, description, status, source, source_url, latitude,
-            longitude, now, now, state,
+            longitude, now, now, state, image_url,
         ),
     )
     if commit:

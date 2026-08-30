@@ -607,15 +607,18 @@ def listing_for_js(l: dict) -> dict:
     # Including state lets "PA" / "TX" work as a location search term, and
     # also disambiguates a search like "Potter" -- both states have one.
     search_text = f"{search_county} {l['state']} {l['precinct']} {search_place} {metro_terms}".lower()
-    # No maps_url or image_url here -- both used to be precomputed and
-    # shipped as full strings for every one of 14,000+ listings, but both
-    # are fully derivable from fields already in this dict (address/
-    # latitude/longitude), just a URL template away. That's real, wasted
-    # payload: image_url alone was ~45 bytes per listing with coordinates,
-    # purely restating the same lat/lon already sitting right next to it.
-    # The client now builds these itself (see imageUrl()/mapsUrl() in the
-    # page's own script) -- see "Shrinking JSON data payloads".
-    return {
+    # No maps_url here -- it's fully derivable from fields already in this
+    # dict (address/latitude/longitude), just a URL template away, and
+    # shipping it precomputed for every one of 14,000+ listings was real,
+    # wasted payload purely restating the same lat/lon already sitting
+    # right next to it. The client builds it itself (see mapsUrl() in the
+    # page's own script) -- see "Shrinking JSON data payloads". image_url
+    # can't get the same treatment now that a listing can carry a *real*
+    # photo (see combined_db.py's own column comment) -- there's no URL
+    # template to derive that, it has to ship as real data -- but the key
+    # is still only added below when there's an actual value, so the vast
+    # majority of listings without one don't pay even a `null` for it.
+    result = {
         "county": l["county"],
         "state": l["state"],
         "precinct": l["precinct"] or None,
@@ -632,6 +635,9 @@ def listing_for_js(l: dict) -> dict:
         "longitude": l["longitude"],
         "search_text": search_text,
     }
+    if l.get("image_url"):
+        result["image_url"] = l["image_url"]
+    return result
 
 
 def compute_home_page_payload() -> dict:
@@ -793,7 +799,7 @@ def deals_page():
           estimated_value: l => l.estimated_value == null,
           equity: l => l.equity_pct == null,
           minimum_bid: l => l.minimum_bid == null,
-          image: l => !imageUrl(l),
+          image: l => !imageUrl(l)[0],
           links: l => !l.source_url && !mapsUrl(l),
         }};
 
@@ -969,17 +975,24 @@ def deals_page():
           return `<span class="equity-badge" style="background:${{equityColor(pct)}}">${{label}}</span>`;
         }}
 
-        // Both used to come pre-built from the server as full strings on
-        // every listing -- purely restating the address/latitude/longitude
-        // already sitting right next to them in the same object. Built
-        // here instead now, from data already on hand, not extra payload.
-        // Mirrors find_deals.py's build_maps_url() and the old
-        // image_url computation listing_for_js() used to do -- see
+        // mapsUrl() used to come pre-built from the server as a full string
+        // on every listing -- purely restating the address/latitude/
+        // longitude already sitting right next to it in the same object.
+        // Built here instead now, from data already on hand, not extra
+        // payload. Mirrors find_deals.py's build_maps_url() -- see
         // "Shrinking JSON data payloads".
+        //
+        // imageUrl() prefers a real photo when the source actually
+        // published one (l.image_url -- see combined_db.py's own column
+        // comment for which sources that is and why bid4assets.com's
+        // same-shaped field is deliberately excluded), falling back to the
+        // derived satellite crop otherwise. Returns [url, isRealPhoto] so
+        // buildRowHtml() below can set accurate alt text either way.
         function imageUrl(l) {{
+          if (l.image_url) return [l.image_url, true];
           return (l.latitude != null && l.longitude != null)
-            ? `/api/thumbnail?lat=${{l.latitude}}&lon=${{l.longitude}}`
-            : null;
+            ? [`/api/thumbnail?lat=${{l.latitude}}&lon=${{l.longitude}}`, false]
+            : [null, false];
         }}
 
         function mapsUrl(l) {{
@@ -994,9 +1007,9 @@ def deals_page():
           const mapUrl = mapsUrl(l);
           if (mapUrl) linksParts.push(`<a href="${{escapeHtml(mapUrl)}}" target="_blank" rel="noopener noreferrer">Map</a>`);
           const linksHtml = linksParts.length ? linksParts.join(' · ') : NO_DATA_HTML;
-          const imgUrl = imageUrl(l);
+          const [imgUrl, isRealPhoto] = imageUrl(l);
           const imageHtml = imgUrl
-            ? `<img src="${{escapeHtml(imgUrl)}}" width="80" height="80" loading="lazy" alt="Satellite view" class="thumb">`
+            ? `<img src="${{escapeHtml(imgUrl)}}" width="80" height="80" loading="lazy" alt="${{isRealPhoto ? 'Property photo' : 'Satellite view'}}" class="thumb">`
             : NO_DATA_HTML;
 
           const countyLabel = l.county + (l.state ? ', ' + l.state : '');
@@ -1027,13 +1040,13 @@ def deals_page():
         function buildPopupContent(l) {{
           const div = document.createElement('div');
 
-          const popupImgUrl = imageUrl(l);
+          const [popupImgUrl, popupIsRealPhoto] = imageUrl(l);
           if (popupImgUrl) {{
             const img = document.createElement('img');
             img.src = popupImgUrl;
             img.width = 150;
             img.height = 150;
-            img.alt = 'Satellite view';
+            img.alt = popupIsRealPhoto ? 'Property photo' : 'Satellite view';
             div.appendChild(img);
             div.appendChild(document.createElement('br'));
           }}

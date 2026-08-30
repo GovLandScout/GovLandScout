@@ -50,6 +50,22 @@ DB_PATH = "gsa_real_estate_sales.db"
 PAGE_SIZE = 48
 TARGET_STATES = ("TX", "PA", "CA")
 
+# Each listing's own JSON carries `property_image: {"image": "<filename>",
+# "bucket_name": "property_image"}` rather than a ready-made URL -- this
+# CDN host and the "<host>/<bucket_name>/<image>" path shape were found by
+# checking what the live site's own <img> tags actually request, not
+# guessed. Confirmed directly against several real listings that this is
+# a genuine photo of the property (not a generic placeholder the way
+# bid4assets.com's same-shaped image field turned out to be -- see
+# combined_db.py's own image_url column comment).
+IMAGE_CDN_URL = "https://d2m3yrz4x1yefr.cloudfront.net"
+
+
+def build_image_url(listing: dict) -> str | None:
+    image = listing.get("property_image") or {}
+    filename, bucket = image.get("image"), image.get("bucket_name")
+    return f"{IMAGE_CDN_URL}/{bucket}/{filename}" if filename and bucket else None
+
 HEADERS = {
     "User-Agent": "GovLandScout-SchoolProject/1.0 (contact: your-email@example.com)",
     "X-Requested-With": "XMLHttpRequest",
@@ -223,6 +239,7 @@ def main():
             latitude=float(listing["latitude"]) if listing.get("latitude") else None,
             longitude=float(listing["longitude"]) if listing.get("longitude") else None,
             state=state,
+            image_url=build_image_url(listing),
         )
 
     print(f"{in_scope} of {len(listings)} listing(s) were in {TARGET_STATES}; stored those in the shared database.")

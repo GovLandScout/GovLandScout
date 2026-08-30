@@ -25,12 +25,15 @@ minimum_bid, and estimated_value is left unset (there's no independent
 market-value estimate here, same as GSA/HUD).
 """
 
+from urllib.parse import quote
+
 import requests
 
 import combined_db
 
-API_URL = "https://public-hlb.epropertyplus.com/landmgmtpub/remote/public/property/getPublishedProperties"
-DETAIL_URL = "https://public-hlb.epropertyplus.com/property/{id}"
+BASE_URL = "https://public-hlb.epropertyplus.com"
+API_URL = f"{BASE_URL}/landmgmtpub/remote/public/property/getPublishedProperties"
+DETAIL_URL = f"{BASE_URL}/property/{{id}}"
 
 HEADERS = {
     "User-Agent": "GovLandScout-SchoolProject/1.0 (contact: your-email@example.com)",
@@ -59,6 +62,18 @@ def build_address(row: dict) -> str | None:
     if not street or not city:
         return None
     return f"{street}, {city}, {state} {zip_code}" if zip_code else f"{street}, {city}, {state}"
+
+
+def build_image_url(row: dict) -> str | None:
+    """publicThumbImgUrl is a relative path off this same platform's own
+    domain ("/landmgmtpub/remote/public/property/viewImage/<id>/<file>")
+    with unescaped spaces in the filename -- confirmed directly against a
+    real listing that this is a genuine site photo (the lot's own "For
+    Sale" sign visible in it), not a placeholder. quote() escapes the
+    spaces/special characters properly for use in an <img src>; safe="/"
+    keeps the path's own slashes from being encoded too."""
+    path = row.get("publicThumbImgUrl")
+    return f"{BASE_URL}{quote(path, safe='/')}" if path else None
 
 
 def build_description(row: dict) -> str:
@@ -97,6 +112,7 @@ def main():
             source_url=DETAIL_URL.format(id=row["id"]),
             latitude=row.get("latitude"),
             longitude=row.get("longitude"),
+            image_url=build_image_url(row),
         )
 
     combined_conn.close()
