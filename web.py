@@ -40,6 +40,19 @@ from find_deals import fetch_all_listings, safe_float
 
 app = FastAPI(title="GovLandScout")
 
+# Every real page (/, /numbers*, /market-trends*, /investment-info,
+# /manual-upload, /about) is left crawlable -- this is a public listings
+# site, being found is the point. /api/ is disallowed since those routes
+# (thumbnail proxy, the deals/bell JSON endpoints) are backend plumbing a
+# page's own JS calls, not content -- crawling them wastes a bot's budget
+# and this site's own DB-backed request handling for no SEO benefit.
+ROBOTS_TXT = "User-agent: *\nAllow: /\nDisallow: /api/\n"
+
+
+@app.get("/robots.txt", response_class=Response)
+def robots_txt():
+    return Response(content=ROBOTS_TXT, media_type="text/plain")
+
 # Cloudflare Turnstile -- chosen over reCAPTCHA/hCaptcha specifically
 # because Cloudflare's already sitting in front of this site (see
 # CF-Connecting-IP use below), so this needs no new third-party relationship,
