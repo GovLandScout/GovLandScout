@@ -36,7 +36,7 @@ from fastapi import FastAPI, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 
 import combined_db
-from find_deals import fetch_all_listings, safe_float
+from find_deals import MAX_PLAUSIBLE_BID_TO_VALUE_RATIO, NUMERIC_PATTERN, fetch_all_listings, safe_float
 
 app = FastAPI(title="GovLandScout")
 
@@ -686,18 +686,43 @@ def compute_home_page_payload() -> dict:
     }
 
 
+# In-process cache of the home page payload -- populated the first time
+# get_home_page_payload() runs, and only replaced when the DB's own
+# home_page_cache row actually changes (once a day, right after
+# build_home_cache.py reruns), not on every request. Without this,
+# deals_page() re-downloaded the full multi-megabyte listings_json blob
+# from Neon on every single visit -- see "Reducing data transfer loads"
+# and combined_db.fetch_home_page_cache_generated_at()'s own docstring
+# for why that's what actually took the site down. A benign race is
+# possible if two requests both see a stale cache at once (both refetch,
+# one's result just gets overwritten by the other) -- harmless enough,
+# and simpler than adding a lock for something this low-stakes.
+_home_page_cache: dict | None = None
+
+
+def get_home_page_payload() -> dict:
+    global _home_page_cache
+
+    conn = combined_db.get_connection()
+    remote_generated_at = combined_db.fetch_home_page_cache_generated_at(conn)
+
+    if remote_generated_at is None:
+        # build_home_cache.py has never run yet (e.g. right after this
+        # table's first deploy) -- nothing cached anywhere yet, so compute
+        # live rather than caching this transient bootstrapping state.
+        conn.close()
+        return compute_home_page_payload()
+
+    if _home_page_cache is None or _home_page_cache["generated_at"] != remote_generated_at:
+        _home_page_cache = combined_db.fetch_home_page_cache(conn)
+
+    conn.close()
+    return _home_page_cache
+
+
 @app.get("/", response_class=HTMLResponse)
 def deals_page():
-    conn = combined_db.get_connection()
-    cached = combined_db.fetch_home_page_cache(conn)
-    conn.close()
-
-    # Falls back to computing live (the slow path this cache exists to
-    # avoid) only if build_home_cache.py has genuinely never run yet --
-    # e.g. right after this table's first deploy, before the next day's
-    # scrape pipeline builds the first cache entry. Every request after
-    # that hits the fast path instead.
-    payload = cached if cached is not None else compute_home_page_payload()
+    payload = get_home_page_payload()
 
     listings_json = payload["listings_json"]
     value_min = payload["value_min"]
@@ -1630,30 +1655,78 @@ SOURCE_LABELS = {
 
 
 def render_numbers_page(state: dict) -> str:
+    """
+    Every number here comes from a single SQL aggregate query rather than
+    pulling every column of every listing in the state into Python just to
+    count/sum a handful of them (fetch_all_listings() used to be called
+    here for exactly that) -- this page's whole point is being live on
+    every request ("Pulled straight from the database each time this page
+    loads" below), so unlike the home page a request-level cache would
+    undercut its own selling point. Doing the counting/summing in Postgres
+    instead keeps that live guarantee while cutting what actually crosses
+    the network from every column of every row down to five numbers -- see
+    "Reducing data transfer loads". The malformed-numeric-string guard
+    (NUMERIC_PATTERN) and the bundled-judgment-amount guard
+    (MAX_PLAUSIBLE_BID_TO_VALUE_RATIO) both mirror find_deals.py's own
+    fetch_all_listings()/has_plausible_pricing() exactly, just expressed as
+    SQL instead of Python -- imported from there rather than redefined here
+    so the two can't silently drift apart.
+    """
     conn = combined_db.get_connection()
-    listings = [l for l in fetch_all_listings(conn) if l["state"] == state["key"]]
+
+    # Nested CASE, not `x ~ pattern AND x::numeric > 0` -- Postgres doesn't
+    # guarantee AND/OR evaluate left-to-right, so a malformed value (the
+    # exact "$20.285.28" case find_deals.py's own safe_float() guards
+    # against) could still reach the ::numeric cast and crash the query
+    # even with the regex check right next to it. Nesting instead guarantees
+    # the cast is only ever reached once the regex has already matched.
+    total, counties, with_coords, priced_count, total_equity = conn.execute(
+        """
+        WITH parsed AS (
+            SELECT
+                latitude,
+                county,
+                CASE WHEN minimum_bid ~ ? THEN
+                    CASE WHEN minimum_bid::numeric > 0 THEN minimum_bid::numeric END
+                END AS min_bid,
+                CASE WHEN estimated_value ~ ? THEN
+                    CASE WHEN estimated_value::numeric > 0 THEN estimated_value::numeric END
+                END AS est_value
+            FROM listings
+            WHERE state = ?
+        )
+        SELECT
+            COUNT(*),
+            COUNT(DISTINCT county),
+            COUNT(*) FILTER (WHERE latitude IS NOT NULL),
+            COUNT(*) FILTER (
+                WHERE min_bid IS NOT NULL AND est_value IS NOT NULL
+                  AND min_bid <= est_value * ? AND est_value - min_bid > 0
+            ),
+            COALESCE(SUM(est_value - min_bid) FILTER (
+                WHERE min_bid IS NOT NULL AND est_value IS NOT NULL
+                  AND min_bid <= est_value * ? AND est_value - min_bid > 0
+            ), 0)
+        FROM parsed
+        """,
+        (NUMERIC_PATTERN, NUMERIC_PATTERN, state["key"],
+         MAX_PLAUSIBLE_BID_TO_VALUE_RATIO, MAX_PLAUSIBLE_BID_TO_VALUE_RATIO),
+    ).fetchone()
+    total_equity = float(total_equity)  # comes back as Decimal
+
     sources = [r[0] for r in conn.execute(
         "SELECT DISTINCT source FROM listings WHERE state = ? ORDER BY source", (state["key"],)
     ).fetchall()]
     conn.close()
 
-    total = len(listings)
-    # Just county name is safe here (no (county, state) pairing needed) --
-    # listings is already filtered to one state, so the cross-state
-    # collision this project otherwise has to guard against (both TX and
-    # PA have a Potter County) can't happen within a single state's page.
-    counties = len({l["county"] for l in listings})
-    with_coords = sum(1 for l in listings if l["latitude"] is not None)
-    priced_with_equity = [l for l in listings if l["equity"] is not None and l["equity"] > 0]
-    total_equity = sum(l["equity"] for l in priced_with_equity)
-    avg_equity = total_equity / len(priced_with_equity) if priced_with_equity else 0
+    avg_equity = total_equity / priced_count if priced_count else 0
 
     stats = [
         (f"{total:,}", "Total listings tracked"),
         (f"{counties}", "Counties covered"),
         (f"{len(sources)}", "Independent data sources"),
         (f"{with_coords:,}", "Listings mapped with real coordinates"),
-        (f"{len(priced_with_equity):,}", "Listings with a calculated equity opportunity"),
+        (f"{priced_count:,}", "Listings with a calculated equity opportunity"),
         (f"${total_equity:,.0f}", "Total estimated equity represented"),
         (f"${avg_equity:,.0f}", "Average equity per priced listing"),
     ]
@@ -1688,8 +1761,8 @@ def render_numbers_page(state: dict) -> str:
            to get equity: basically, how much room there is between what you'd pay and what the property is
            actually worth. A lot of listings don't have both numbers to work with (GSA and state surplus sales,
            for instance, don't come with an independent appraisal at all), which is why equity is only calculated
-           for {len(priced_with_equity):,} of the {total:,} {state['name']} listings tracked here, not all of them.
-           "Average equity per priced listing" is the total estimated equity above divided by just that {len(priced_with_equity):,},
+           for {priced_count:,} of the {total:,} {state['name']} listings tracked here, not all of them.
+           "Average equity per priced listing" is the total estimated equity above divided by just that {priced_count:,},
            not the full {total:,}, which would understate it by folding in listings with nothing to calculate from.</p>
 
         <h2>Where the data comes from</h2>

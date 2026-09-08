@@ -334,6 +334,22 @@ def fetch_home_page_cache(conn: PgConnection) -> dict | None:
     }
 
 
+def fetch_home_page_cache_generated_at(conn: PgConnection) -> str | None:
+    """
+    Just the timestamp, not the multi-megabyte listings_json blob next to
+    it -- web.py's in-process cache (see get_home_page_payload() and
+    "Reducing data transfer loads") calls this on every request to check
+    whether the cached payload has actually changed, and only pays for
+    fetch_home_page_cache()'s full row (megabytes) when it has. Before
+    that cache existed, deals_page() called fetch_home_page_cache() itself
+    on every single request, re-downloading the whole blob from Neon each
+    time -- real traffic against that is what burned through Neon's
+    data-transfer quota and took the site down (see git log).
+    """
+    row = conn.execute("SELECT generated_at FROM home_page_cache WHERE id = 1").fetchone()
+    return row[0] if row else None
+
+
 def fetch_cached_enrichment_bulk(
     conn: PgConnection, state: str, county: str, account_numbers: list[str]
 ) -> dict[str, tuple[str | None, str | None]]:
