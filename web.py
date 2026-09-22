@@ -30,6 +30,7 @@ import time
 import uuid
 from html import escape
 from pathlib import Path
+from urllib.parse import urlparse
 
 import requests
 from fastapi import FastAPI, Form, HTTPException, Request
@@ -63,6 +64,19 @@ def robots_txt():
 TURNSTILE_SITE_KEY = os.environ.get("TURNSTILE_SITE_KEY")
 TURNSTILE_SECRET_KEY = os.environ.get("TURNSTILE_SECRET_KEY")
 TURNSTILE_VERIFY_URL = "https://challenges.cloudflare.com/turnstile/v0/siteverify"
+
+# Cloudflare Web Analytics -- same "unset means silently skip, don't break
+# anything" pattern as Turnstile above, and the same reasoning for picking
+# it applies doubly here: Cloudflare already sits in front of every
+# request (confirmed live -- see the `server: cloudflare` header this site
+# already returns), so this needs no new third-party relationship, adds a
+# single small beacon script rather than a heavier analytics SDK, and is
+# cookie-free (Cloudflare's own privacy-first pitch for this product) --
+# no cookie-consent banner needed for it. The token itself comes from the
+# Cloudflare dashboard (Analytics & Logs -> Web Analytics -> Add a site,
+# after adding this site's zone) and is unrelated to the Turnstile keys
+# above despite both being Cloudflare products.
+CF_ANALYTICS_TOKEN = os.environ.get("CF_ANALYTICS_TOKEN")
 
 # Esri's satellite export explicitly disallows caching
 # (Cache-Control: max-age=0, must-revalidate on their responses), so every
@@ -503,6 +517,15 @@ TURNSTILE_HEAD = """
 <script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>
 """
 
+# Built once at import time, not per-request -- CF_ANALYTICS_TOKEN never
+# changes without a redeploy, so there's nothing to gain from re-checking
+# it on every page_shell() call. Empty string (not None) when unset, so
+# the f-string below can always just interpolate it directly.
+ANALYTICS_HEAD = (
+    f"<script defer src='https://static.cloudflareinsights.com/beacon.min.js' "
+    f"data-cf-beacon='{{\"token\": \"{CF_ANALYTICS_TOKEN}\"}}'></script>"
+) if CF_ANALYTICS_TOKEN else ""
+
 
 def nav_html(active: str) -> str:
     pages = [
@@ -577,6 +600,7 @@ def page_shell(title: str, active: str, body: str, extra_head: str = "") -> str:
       <meta name="description" content="A searchable, mappable record of real estate being sold by government entities across Texas, Pennsylvania, and California: county tax sales, federal and state surplus, HUD foreclosures, and land bank listings." />
       <title>{title}</title>
       {extra_head}
+      {ANALYTICS_HEAD}
       <style>{PAGE_CSS}</style>
     </head>
     <body>
@@ -2086,6 +2110,18 @@ def manual_upload_submit(
         return RedirectResponse(
             "/manual-upload?error=A source link is required, so every submitted property can be traced back to where it came from.",
             status_code=303,
+        )
+
+    # This gets rendered straight back out as a clickable <a href> (see
+    # buildRowHtml() in the page's own script) -- escapeHtml() there stops
+    # an attribute breakout, but doesn't stop a scheme like "javascript:"
+    # or "data:" from executing on click, since that's valid href content
+    # either way. Every other field on this form gets validated before
+    # being trusted; this is the one that becomes a link, so it gets the
+    # same treatment.
+    if urlparse(source_url).scheme not in ("http", "https"):
+        return RedirectResponse(
+            "/manual-upload?error=Source link must start with http:// or https://.", status_code=303,
         )
 
     if not address and not (lat_str and lon_str):

@@ -20,3 +20,12 @@ services:
         sync: false
       - key: TURNSTILE_SECRET_KEY
         sync: false
+      # Cloudflare Web Analytics beacon token (see web.py's
+      # CF_ANALYTICS_TOKEN/ANALYTICS_HEAD). Get it from
+      # dash.cloudflare.com -> Analytics & Logs -> Web Analytics -> Add a
+      # site (pick this site's zone), then copy the token out of the
+      # generated <script> snippet -- it's the value after "token":, not
+      # the whole snippet. Left unset, every page just renders without the
+      # beacon script, same fail-open behavior as the Turnstile keys above.
+      - key: CF_ANALYTICS_TOKEN
+        sync: false
