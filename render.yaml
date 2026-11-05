@@ -16,6 +16,10 @@ services:
       # Left unset, the form still works -- the widget just doesn't render
       # and server-side verification is skipped -- so this can be added
       # after deploy without breaking anything in the meantime.
+      # Secret for GET /api/stats?key=... (page view totals). Unset, the
+      # endpoint 404s; pick any long random string.
+      - key: STATS_KEY
+        sync: false
       - key: TURNSTILE_SITE_KEY
         sync: false
       - key: TURNSTILE_SECRET_KEY

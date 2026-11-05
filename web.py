@@ -23,6 +23,7 @@ initial load, no client-side framework.
 Run with: venv/bin/uvicorn web:app --reload
 """
 
+import hmac
 import json
 import math
 import os
@@ -568,6 +569,29 @@ BELL_SCRIPT = """
 """
 
 
+# Fires from the browser on every page load, so it still counts views that
+# Cloudflare or the browser cache served without ever reaching the origin.
+COUNTER_SCRIPT = """
+<script>
+  (function () {
+    try {
+      var today = new Date().toISOString().slice(0, 10);
+      var isNew = 0;
+      try {
+        if (localStorage.getItem('gls_last_visit') !== today) {
+          isNew = 1;
+          localStorage.setItem('gls_last_visit', today);
+        }
+      } catch (e) {}
+      var url = '/api/hit?p=' + encodeURIComponent(location.pathname) + '&u=' + isNew;
+      if (navigator.sendBeacon) { navigator.sendBeacon(url); }
+      else { fetch(url, { method: 'POST', keepalive: true }); }
+    } catch (e) {}
+  })();
+</script>
+"""
+
+
 def page_shell(title: str, active: str, body: str, extra_head: str = "") -> str:
     return f"""
     <html>
@@ -583,6 +607,7 @@ def page_shell(title: str, active: str, body: str, extra_head: str = "") -> str:
       {nav_html(active)}
       {body}
       {BELL_SCRIPT}
+      {COUNTER_SCRIPT}
     </body>
     </html>
     """
@@ -2204,6 +2229,28 @@ def about_page():
 @app.get("/api/deals")
 def deals_api():
     return get_all_listings()
+
+
+@app.post("/api/hit", status_code=204)
+def record_hit(p: str = "/", u: int = 0):
+    known_paths = {r.path for r in app.routes if "GET" in getattr(r, "methods", ()) and not r.path.startswith("/api")}
+    if p not in known_paths:
+        return Response(status_code=204)
+    conn = combined_db.get_connection()
+    combined_db.record_page_view(conn, p, bool(u))
+    conn.close()
+    return Response(status_code=204)
+
+
+@app.get("/api/stats")
+def stats_api(key: str = ""):
+    expected = os.environ.get("STATS_KEY", "")
+    if not expected or not hmac.compare_digest(key, expected):
+        raise HTTPException(status_code=404)
+    conn = combined_db.get_connection()
+    stats = combined_db.fetch_page_view_stats(conn)
+    conn.close()
+    return stats
 
 
 @app.get("/api/bell")
