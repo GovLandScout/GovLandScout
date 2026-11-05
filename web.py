@@ -50,6 +50,17 @@ app = FastAPI(title="GovLandScout")
 ROBOTS_TXT = "User-agent: *\nAllow: /\nDisallow: /api/\n"
 
 
+FONT_PATH = Path(__file__).parent / "static" / "PublicSans-latin.woff2"
+
+
+@app.get("/static/PublicSans-latin.woff2", response_class=Response)
+def public_sans_font():
+    return Response(
+        content=FONT_PATH.read_bytes(), media_type="font/woff2",
+        headers={"Cache-Control": THUMBNAIL_CACHE_CONTROL},
+    )
+
+
 @app.get("/robots.txt", response_class=Response)
 def robots_txt():
     return Response(content=ROBOTS_TXT, media_type="text/plain")
@@ -295,52 +306,81 @@ def get_all_listings() -> list[dict]:
 
 
 PAGE_CSS = """
+@font-face {
+  font-family: "Public Sans"; font-style: normal; font-weight: 400 800; font-display: swap;
+  src: url(/static/PublicSans-latin.woff2) format("woff2");
+}
 html { color-scheme: light; }
 * { box-sizing: border-box; }
 body {
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-  margin: 0; padding: 2rem clamp(1rem, 4vw, 3rem);
-  background: #f1f5f9; color: #0f172a;
+  font-family: "Public Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  margin: 0; background: #f0f0f0; color: #1b1b1b; line-height: 1.5;
 }
+a { color: #005ea2; }
+a:hover { color: #1a4480; }
+a:focus-visible, button:focus-visible, input:focus-visible, select:focus-visible,
+textarea:focus-visible, summary:focus-visible { outline: 0.25rem solid #2491ff; outline-offset: 0; }
 
-h1 { font-size: 2rem; font-weight: 800; letter-spacing: -0.02em; margin: 0 0 0.4rem; }
-.subtitle { margin: 0 0 1.5rem; color: #475569; font-size: 0.95rem; line-height: 1.55; max-width: 75ch; }
+.skip-link {
+  position: absolute; left: -9999px; top: 0; z-index: 100;
+  background: #fff; color: #005ea2; padding: 0.75rem 1rem; font-weight: 700;
+}
+.skip-link:focus { left: 0; }
 
+.site-header { background: #162e51; color: #fff; border-bottom: 4px solid #005ea2; }
+.site-header-top {
+  display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.25rem 1.25rem;
+  padding: 0.9rem clamp(1rem, 4vw, 3rem) 0;
+}
+.site-title { font-size: 1.6rem; font-weight: 800; letter-spacing: -0.01em; color: #fff; text-decoration: none; }
+.site-title:hover { color: #fff; text-decoration: underline; }
+.site-tagline { color: #adc4e4; font-size: 0.875rem; }
 .site-nav {
-  display: flex; gap: 0.25rem; margin-bottom: 1.75rem;
-  border-bottom: 1px solid #e2e8f0;
+  display: flex; flex-wrap: wrap; align-items: stretch;
+  padding: 0.5rem clamp(0.5rem, 3.5vw, 2.75rem) 0;
 }
 .site-nav a {
-  padding: 0.75rem 1.1rem; text-decoration: none; color: #475569;
-  font-weight: 600; font-size: 0.9rem; border-bottom: 2px solid transparent; margin-bottom: -1px;
+  padding: 0.7rem 0.9rem; text-decoration: none; color: #dfe1e2;
+  font-weight: 600; font-size: 0.875rem; border-bottom: 0.25rem solid transparent; margin-bottom: -4px;
 }
-.site-nav a:hover { color: #0f172a; }
-.site-nav a.active { color: #2563eb; border-bottom-color: #2563eb; }
+.site-nav a:hover { color: #fff; border-bottom-color: #73b3e7; }
+.site-nav a.active { color: #fff; border-bottom-color: #73b3e7; }
+.site-nav a:focus-visible { outline-offset: -0.25rem; }
 
-.bell-wrap { position: relative; margin-left: auto; display: flex; align-items: center; }
+.site-main { padding: 2rem clamp(1rem, 4vw, 3rem); }
+.site-footer { background: #1b1b1b; color: #dfe1e2; padding: 1.75rem clamp(1rem, 4vw, 3rem); font-size: 0.85rem; line-height: 1.6; }
+.site-footer p { margin: 0 0 0.6rem; max-width: 80ch; }
+.site-footer a { color: #99deff; }
+.site-footer a:hover { color: #fff; }
+.footer-links { display: flex; flex-wrap: wrap; gap: 0.25rem 1.25rem; margin-top: 0.9rem; }
+
+h1 { font-size: 2rem; font-weight: 800; letter-spacing: -0.02em; line-height: 1.2; margin: 0 0 0.6rem; }
+.subtitle { margin: 0 0 1.5rem; color: #565c65; font-size: 0.95rem; line-height: 1.55; max-width: 75ch; }
+
+.bell-wrap { position: relative; margin-left: auto; display: flex; align-items: center; align-self: center; }
 .bell-btn {
-  position: relative; background: none; border: none; cursor: pointer;
-  padding: 0.75rem 1.1rem; font-weight: 600; font-size: 0.9rem; color: #475569;
-  border-radius: 0;
+  position: relative; background: none; cursor: pointer;
+  padding: 0.4rem 0.8rem; font-weight: 600; font-size: 0.8rem; color: #dfe1e2;
+  font-family: inherit; border: 1px solid #5c6f94; border-radius: 0;
 }
-.bell-btn:hover { background: #f1f5f9; color: #0f172a; }
+.bell-btn:hover { background: rgba(255, 255, 255, 0.12); color: #fff; }
 .bell-badge {
-  position: absolute; top: 4px; right: 2px; width: 8px; height: 8px; border-radius: 0;
+  position: absolute; top: -4px; right: -4px; width: 8px; height: 8px; border-radius: 0;
   background: #dc2626; display: none;
 }
 .bell-badge.show { display: block; }
 .bell-popover {
   display: none; position: absolute; top: calc(100% + 6px); right: 0; z-index: 20;
-  background: #fff; border: 1px solid #e2e8f0; border-radius: 0;
-  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.12); padding: 0.9rem 1rem;
-  width: 19rem; font-size: 0.85rem; color: #1e293b; line-height: 1.5;
+  background: #fff; border: 1px solid #dfe1e2; border-radius: 0;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18); padding: 0.9rem 1rem;
+  width: 19rem; font-size: 0.85rem; color: #1b1b1b; line-height: 1.5;
 }
 .bell-popover.show { display: block; }
 .bell-popover .bell-summary { margin: 0 0 0.35rem; }
-.bell-popover .bell-time { color: #64748b; font-size: 0.75rem; }
+.bell-popover .bell-time { color: #565c65; font-size: 0.75rem; }
 
 .table-scroll {
-  border: 1px solid #e2e8f0; box-shadow: 0 1px 3px rgba(15, 23, 42, 0.06);
+  border: 1px solid #dfe1e2; box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
 }
 table {
   border-collapse: collapse; width: 100%; min-width: 920px; background: #fff;
@@ -353,15 +393,15 @@ table {
 @media (max-width: 960px) {
   .table-scroll { overflow-x: auto; }
 }
-th, td { border-bottom: 1px solid #e2e8f0; padding: 10px 14px; text-align: left; font-size: 0.875rem; color: #1e293b; }
+th, td { border-bottom: 1px solid #dfe1e2; padding: 10px 14px; text-align: left; font-size: 0.875rem; color: #1b1b1b; }
 th {
-  background: #f8fafc; position: sticky; top: 0; font-weight: 700; color: #334155;
-  text-transform: uppercase; font-size: 0.72rem; letter-spacing: 0.04em; border-bottom: 2px solid #e2e8f0;
+  background: #dfe1e2; position: sticky; top: 0; font-weight: 700; color: #1b1b1b;
+  text-transform: uppercase; font-size: 0.72rem; letter-spacing: 0.04em; border-bottom: 2px solid #a9aeb1;
 }
-tr:nth-child(even) td { background: #f8fafc; }
+tr:nth-child(even) td { background: #f9f9f9; }
 tr:nth-child(odd) td { background: #fff; }
-tr:hover td { background: #eff6ff; }
-.nodata { color: #94a3b8; font-style: italic; }
+tr:hover td { background: #e7f6f8; }
+.nodata { color: #71767a; font-style: italic; }
 .thumb { display: block; object-fit: cover; border-radius: 0; }
 .equity-badge {
   display: inline-block; padding: 3px 10px; border-radius: 0;
@@ -370,15 +410,17 @@ tr:hover td { background: #eff6ff; }
 
 .bookmark-btn {
   background: none; border: none; cursor: pointer; font-size: 1.1rem;
-  padding: 2px 4px; line-height: 1; color: #cbd5e1;
+  padding: 2px 4px; line-height: 1; color: #a9aeb1;
 }
 .bookmark-btn:hover { color: #f59e0b; }
 .bookmark-btn.saved { color: #f59e0b; }
 .bookmark-btn-popup { font-size: 1rem; margin-left: 6px; vertical-align: middle; }
 
+button, input, select, textarea { font-family: inherit; }
+
 .card {
-  background: #fff; border: 1px solid #e2e8f0; border-radius: 0;
-  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.06);
+  background: #fff; border: 1px solid #dfe1e2; border-radius: 0;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
 }
 
 .controls {
@@ -387,56 +429,54 @@ tr:hover td { background: #eff6ff; }
 }
 .control { display: flex; flex-direction: column; gap: 0.35rem; }
 .control label {
-  font-size: 0.75rem; font-weight: 700; color: #475569;
+  font-size: 0.75rem; font-weight: 700; color: #565c65;
   text-transform: uppercase; letter-spacing: 0.04em;
 }
 .control input[type="text"], .control select {
-  padding: 0.5rem 0.7rem; font-size: 0.9rem; border: 1px solid #cbd5e1; border-radius: 0;
-  background: #fff; color: #0f172a;
+  padding: 0.5rem 0.7rem; font-size: 0.9rem; border: 1px solid #a9aeb1; border-radius: 0;
+  background: #fff; color: #1b1b1b;
 }
-.control input[type="text"]:focus, .control select:focus {
-  outline: none; border-color: #2563eb; box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.15);
-}
+
 .range-control { min-width: 260px; }
 .range-control .range-row { display: flex; align-items: center; gap: 0.5rem; }
-.range-control input[type="range"] { flex: 1; accent-color: #2563eb; }
-.range-value { font-size: 0.8rem; color: #475569; white-space: nowrap; min-width: 5.5rem; }
+.range-control input[type="range"] { flex: 1; accent-color: #005ea2; }
+.range-value { font-size: 0.8rem; color: #565c65; white-space: nowrap; min-width: 5.5rem; }
 .checkbox-filters { min-width: 260px; }
 .checkbox-grid {
   display: grid; grid-template-columns: repeat(2, auto); gap: 0.3rem 1rem;
 }
 .checkbox-grid label {
   display: flex; align-items: center; gap: 0.4rem; font-size: 0.85rem;
-  font-weight: 400; text-transform: none; letter-spacing: normal; color: #1e293b; cursor: pointer;
+  font-weight: 400; text-transform: none; letter-spacing: normal; color: #1b1b1b; cursor: pointer;
 }
-.checkbox-grid input[type="checkbox"] { accent-color: #2563eb; cursor: pointer; }
+.checkbox-grid input[type="checkbox"] { accent-color: #005ea2; cursor: pointer; }
 #resetFilters, #toggleMap {
   padding: 0.55rem 1.1rem; font-size: 0.85rem; font-weight: 600; border-radius: 0;
   cursor: pointer; margin-right: 0.5rem; border: 1px solid transparent;
   transition: background 0.15s ease, border-color 0.15s ease;
 }
-#resetFilters { background: #fff; color: #334155; border-color: #cbd5e1; }
-#resetFilters:hover { background: #f1f5f9; }
-#toggleMap { background: #2563eb; color: #fff; }
-#toggleMap:hover { background: #1d4ed8; }
-#resultSummary { font-size: 0.85rem; color: #475569; }
+#resetFilters { background: #fff; color: #3d4551; border-color: #a9aeb1; }
+#resetFilters:hover { background: #f0f0f0; }
+#toggleMap { background: #005ea2; color: #fff; }
+#toggleMap:hover { background: #1a4480; }
+#resultSummary { font-size: 0.85rem; color: #565c65; }
 #mapContainer { height: 500px; margin-bottom: 1.25rem; overflow: hidden; }
 
 .pagination {
   display: flex; align-items: center; justify-content: center; gap: 1rem;
   padding: 1rem; margin-top: -1px;
-  background: #fff; border: 1px solid #e2e8f0; border-top: none;
+  background: #fff; border: 1px solid #dfe1e2; border-top: none;
 }
 .pagination button {
   padding: 0.45rem 0.9rem; font-size: 0.85rem; font-weight: 600; border-radius: 0;
-  cursor: pointer; border: 1px solid #cbd5e1; background: #fff; color: #334155;
+  cursor: pointer; border: 1px solid #a9aeb1; background: #fff; color: #3d4551;
 }
-.pagination button:hover:not(:disabled) { background: #f1f5f9; }
+.pagination button:hover:not(:disabled) { background: #f0f0f0; }
 .pagination button:disabled { opacity: 0.4; cursor: default; }
-#pageIndicator { font-size: 0.85rem; color: #475569; min-width: 8rem; text-align: center; }
+#pageIndicator { font-size: 0.85rem; color: #565c65; min-width: 8rem; text-align: center; }
 #pageSelect {
-  padding: 0.45rem 0.7rem; font-size: 0.85rem; border: 1px solid #cbd5e1; border-radius: 0;
-  background: #fff; color: #334155;
+  padding: 0.45rem 0.7rem; font-size: 0.85rem; border: 1px solid #a9aeb1; border-radius: 0;
+  background: #fff; color: #3d4551;
 }
 
 .stats-grid {
@@ -444,12 +484,12 @@ tr:hover td { background: #eff6ff; }
   gap: 1.25rem; margin-bottom: 2rem;
 }
 .stat-card { padding: 1.5rem; }
-.stat-card .stat-value { font-size: 2.25rem; font-weight: 800; color: #2563eb; letter-spacing: -0.02em; }
-.stat-card .stat-label { margin-top: 0.35rem; color: #475569; font-size: 0.9rem; }
-.prose { max-width: 75ch; line-height: 1.65; color: #1e293b; font-size: 0.95rem; }
+.stat-card .stat-value { font-size: 2.25rem; font-weight: 800; color: #005ea2; letter-spacing: -0.02em; }
+.stat-card .stat-label { margin-top: 0.35rem; color: #565c65; font-size: 0.9rem; }
+.prose { max-width: 75ch; line-height: 1.65; color: #1b1b1b; font-size: 0.95rem; }
 .prose h2 { font-size: 1.25rem; margin: 2rem 0 0.75rem; }
 .prose h2:first-child { margin-top: 0; }
-.prose a { color: #2563eb; }
+.prose a { color: #005ea2; }
 .contact-card { padding: 1.5rem; max-width: 32rem; }
 
 .manual-badge {
@@ -460,22 +500,20 @@ tr:hover td { background: #eff6ff; }
 
 .manual-form { padding: 1.5rem 1.75rem; max-width: 40rem; }
 .manual-form .field { display: flex; flex-direction: column; gap: 0.35rem; margin-bottom: 1.1rem; }
-.manual-form label { font-size: 0.85rem; font-weight: 700; color: #334155; }
-.manual-form .hint { font-size: 0.78rem; color: #64748b; }
-.manual-form input[type="text"], .manual-form input[type="url"], .manual-form textarea {
-  padding: 0.6rem 0.75rem; font-size: 0.9rem; border: 1px solid #cbd5e1; border-radius: 0;
-  background: #fff; color: #0f172a; font-family: inherit;
+.manual-form label { font-size: 0.85rem; font-weight: 700; color: #3d4551; }
+.manual-form .hint { display: block; font-size: 0.78rem; color: #565c65; }
+.manual-form input[type="text"], .manual-form input[type="url"], .manual-form textarea, .manual-form select {
+  padding: 0.6rem 0.75rem; font-size: 0.9rem; border: 1px solid #a9aeb1; border-radius: 0;
+  background: #fff; color: #1b1b1b; font-family: inherit;
 }
-.manual-form input:focus, .manual-form textarea:focus {
-  outline: none; border-color: #2563eb; box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.15);
-}
+
 .manual-form textarea { resize: vertical; min-height: 5rem; }
 .manual-form .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
 .manual-form button {
   padding: 0.65rem 1.4rem; font-size: 0.9rem; font-weight: 700; border-radius: 0;
-  cursor: pointer; border: none; background: #2563eb; color: #fff;
+  cursor: pointer; border: none; background: #005ea2; color: #fff;
 }
-.manual-form button:hover { background: #1d4ed8; }
+.manual-form button:hover { background: #1a4480; }
 .form-banner {
   padding: 0.9rem 1.1rem; border-radius: 0; font-size: 0.88rem; margin-bottom: 1.25rem;
   max-width: 40rem;
@@ -508,18 +546,18 @@ TURNSTILE_HEAD = """
 def nav_html(active: str) -> str:
     pages = [
         ("/", "home", "Home"),
-        ("/market-trends", "market-trends-tx", "Market Trends: TX (Experimental)"),
-        ("/market-trends-pa", "market-trends-pa", "Market Trends: PA (Experimental)"),
-        ("/market-trends-ca", "market-trends-ca", "Market Trends: CA (Experimental)"),
+        ("/market-trends", "market-trends-tx", "Trends: TX"),
+        ("/market-trends-pa", "market-trends-pa", "Trends: PA"),
+        ("/market-trends-ca", "market-trends-ca", "Trends: CA"),
         ("/numbers", "numbers-tx", "Numbers: TX"),
         ("/numbers-pa", "numbers-pa", "Numbers: PA"),
         ("/numbers-ca", "numbers-ca", "Numbers: CA"),
         ("/investment-info", "investment", "Investment Info"),
-        ("/manual-upload", "manual-upload", "Manual property uploads"),
+        ("/manual-upload", "manual-upload", "Submit a Property"),
         ("/about", "about", "About & Contact"),
     ]
     links = "".join(
-        f'<a href="{href}" class="{"active" if key == active else ""}">{label}</a>'
+        f'<a href="{href}" class="{"active" if key == active else ""}"{' aria-current="page"' if key == active else ""}{' title="Experimental research model"' if key.startswith("market-trends") else ""}>{label}</a>'
         for href, key, label in pages
     )
     bell = """
@@ -533,7 +571,16 @@ def nav_html(active: str) -> str:
         </div>
       </div>
     """
-    return f'<nav class="site-nav">{links}{bell}</nav>'
+    return f'''
+      <header class="site-header">
+        <div class="site-header-top">
+          <a href="/" class="site-title">GovLandScout</a>
+          <span class="site-tagline">Government-sold real estate in Texas, Pennsylvania, and California</span>
+          {bell}
+        </div>
+        <nav class="site-nav" aria-label="Main">{links}</nav>
+      </header>
+    '''
 
 
 # Plain (non-f-string) so JS's own {} don't need doubling -- inserted
@@ -592,6 +639,20 @@ COUNTER_SCRIPT = """
 """
 
 
+FOOTER_HTML = """
+<footer class="site-footer">
+  <p><strong>GovLandScout</strong> is an independent research tool. It is not affiliated with, endorsed by, or operated by any county, state, or federal agency, and it is not legal or financial advice.</p>
+  <p>Listings are collected from public government sources and may be outdated or incomplete. Always verify details with the listing agency before bidding.</p>
+  <div class="footer-links">
+    <a href="/about">About &amp; Contact</a>
+    <a href="/investment-info">Investment Info</a>
+    <a href="/manual-upload">Submit a property</a>
+    <a href="https://github.com/GovLandScout/GovLandScout" target="_blank" rel="noopener noreferrer">Source on GitHub</a>
+  </div>
+</footer>
+"""
+
+
 def page_shell(title: str, active: str, body: str, extra_head: str = "") -> str:
     return f"""
     <html>
@@ -600,12 +661,17 @@ def page_shell(title: str, active: str, body: str, extra_head: str = "") -> str:
       <meta name="viewport" content="width=device-width, initial-scale=1" />
       <meta name="description" content="A searchable, mappable record of real estate being sold by government entities across Texas, Pennsylvania, and California: county tax sales, federal and state surplus, HUD foreclosures, and land bank listings." />
       <title>{title}</title>
+      <link rel="preload" href="/static/PublicSans-latin.woff2" as="font" type="font/woff2" crossorigin />
       {extra_head}
       <style>{PAGE_CSS}</style>
     </head>
     <body>
+      <a class="skip-link" href="#main-content">Skip to main content</a>
       {nav_html(active)}
+      <main id="main-content" class="site-main">
       {body}
+      </main>
+      {FOOTER_HTML}
       {BELL_SCRIPT}
       {COUNTER_SCRIPT}
     </body>
