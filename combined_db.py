@@ -253,6 +253,21 @@ def init_db(conn: PgConnection):
         ON historical_listings(county, account_number, sale_date)
     """)
 
+    # Aggregate-only traffic counter fed by web.py's /api/hit beacon: one
+    # row per (UTC day, page path), no IPs or per-visitor rows stored.
+    # `visitors` counts browsers on their first view of the day (deduped
+    # client-side via localStorage), so it's a daily-unique figure, not a
+    # lifetime one.
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS page_views (
+            day TEXT NOT NULL,
+            path TEXT NOT NULL,
+            views INTEGER NOT NULL DEFAULT 0,
+            visitors INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (day, path)
+        )
+    """)
+
     conn.commit()
 
 
@@ -292,6 +307,39 @@ def fetch_latest_bell_notification(conn: PgConnection) -> tuple[str, int, str] |
         "SELECT created_at, error_count, summary FROM bell_notifications ORDER BY created_at DESC LIMIT 1"
     ).fetchone()
     return tuple(row) if row else None
+
+
+def record_page_view(conn: PgConnection, path: str, is_new_visitor: bool):
+    day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    conn.execute(
+        """
+        INSERT INTO page_views (day, path, views, visitors) VALUES (?, ?, 1, ?)
+        ON CONFLICT (day, path) DO UPDATE SET
+            views = page_views.views + 1,
+            visitors = page_views.visitors + excluded.visitors
+        """,
+        (day, path, 1 if is_new_visitor else 0),
+    )
+    conn.commit()
+
+
+def fetch_page_view_stats(conn: PgConnection) -> dict:
+    """Lifetime totals plus per-day and per-path breakdowns of page_views."""
+    total_views, total_visitors = conn.execute(
+        "SELECT COALESCE(SUM(views), 0), COALESCE(SUM(visitors), 0) FROM page_views"
+    ).fetchone()
+    by_day = conn.execute(
+        "SELECT day, SUM(views), SUM(visitors) FROM page_views GROUP BY day ORDER BY day DESC LIMIT 30"
+    ).fetchall()
+    by_path = conn.execute(
+        "SELECT path, SUM(views) FROM page_views GROUP BY path ORDER BY SUM(views) DESC"
+    ).fetchall()
+    return {
+        "total_views": int(total_views),
+        "total_daily_visitors": int(total_visitors),
+        "last_30_days": [{"day": d, "views": int(v), "visitors": int(u)} for d, v, u in by_day],
+        "by_page": [{"path": p, "views": int(v)} for p, v in by_path],
+    }
 
 
 def write_home_page_cache(

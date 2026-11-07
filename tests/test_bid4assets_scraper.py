@@ -8,7 +8,7 @@ county rather than following one consistent template).
 import unittest
 
 from bid4assets_scraper import (
-    discover_pa_storefronts,
+    discover_storefronts,
     extract_account_number,
     is_still_available,
     parse_storefront_collections,
@@ -39,19 +39,19 @@ STOREFRONT_HTML = """
 
 class DiscoverPaStorefrontsTests(unittest.TestCase):
     def test_finds_every_pa_storefront(self):
-        storefronts = discover_pa_storefronts(COUNTY_SALES_HTML)
+        storefronts = discover_storefronts(COUNTY_SALES_HTML, "PA")
         self.assertIn(("Berks", "BerksPATaxSaleSep26"), storefronts)
         self.assertIn(("Monroe", "MonroePATaxAug26"), storefronts)
 
     def test_non_pa_storefront_excluded(self):
-        storefronts = discover_pa_storefronts(COUNTY_SALES_HTML)
+        storefronts = discover_storefronts(COUNTY_SALES_HTML, "PA")
         counties = [c for c, _ in storefronts]
         self.assertNotIn("Shasta", counties)
 
     def test_philadelphia_excluded_since_it_has_no_storefront_slug(self):
         # Philadelphia's link is /philataxsales, not /storefront/..., and its
         # label doesn't match "<County> County, PA" -- see module docstring.
-        storefronts = discover_pa_storefronts(COUNTY_SALES_HTML)
+        storefronts = discover_storefronts(COUNTY_SALES_HTML, "PA")
         self.assertEqual([s for s in storefronts if "phila" in s[1].lower()], [])
 
 
